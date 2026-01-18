@@ -13,6 +13,7 @@ import wandb
 from src.models import DiT
 from src.diffusion.loss import TrinityLoss
 from src.utils.autoencoder import AutoencoderWrapper
+from src.vis.synthetic_plot import log_synthetic_eval
 
 def get_dataloader(data_path, batch_size, image_size):
     """
@@ -119,7 +120,7 @@ def main():
     # 1. Setup Data & Config
     if args.dataset_type == 'synthetic':
         from src.data.synthetic import SyntheticDataset
-        dataset = SyntheticDataset(size=50000, type=args.synthetic_type)
+        dataset = SyntheticDataset(size=65536*2, type=args.synthetic_type)
         dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
         
         in_channels = 2
@@ -292,6 +293,11 @@ def main():
         if epoch % 10 == 0:
             os.makedirs(args.checkpoint_dir, exist_ok=True)
             accelerator.save_state(f"{args.checkpoint_dir}/epoch_{epoch}")
+            
+            # Validation / Plotting for Synthetic Data
+            if args.dataset_type == 'synthetic' and accelerator.is_local_main_process:
+                print(f"Generating samples for epoch {epoch}...")
+                log_synthetic_eval(model, noise_scheduler, device, current_step, args.synthetic_type, wandb_on=args.use_wandb)
     
     if args.use_wandb:
         accelerator.end_training()

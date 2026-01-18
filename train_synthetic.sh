@@ -9,13 +9,13 @@ export OMP_NUM_THREADS=4
 # Config
 DATASET_TYPE="synthetic"
 SYNTHETIC_TYPE="swiss_roll" # Options: 'swiss_roll', '8gaussians', 'checkerboard', 'olympic'
-CHECKPOINT_DIR="checkpoints/synthetic_swiss_roll"
+CHECKPOINT_DIR="checkpoints/synthetic"
 MODE="vit" # 'vit' or 'standard'
 
 # Hyperparameters
-BATCH_SIZE=1024         # Larger batch size for synthetic 2D data
+BATCH_SIZE=2048         # Larger batch size for synthetic 2D data
 LR=1e-3                 # Higher LR often works well for low-dim problems
-EPOCHS=1000
+EPOCHS=500
 WANDB_PROJECT="vit-diffusion-synthetic"
 WANDB_RUN_NAME="synthetic_run_001"
 
@@ -34,8 +34,8 @@ accelerate launch --mixed_precision="no" train.py \
     --hidden_size 128 \
     --depth 4 \
     --num_heads 4 \
-    --vit_num_heads 4 \
-    --vit_rank 8 \
+    --vit_num_heads 2 \
+    --vit_rank 2 \
     --num_epochs $EPOCHS \
     --checkpoint_dir "$CHECKPOINT_DIR" \
     --use_wandb \
@@ -43,6 +43,7 @@ accelerate launch --mixed_precision="no" train.py \
     --wandb_run_name $WANDB_RUN_NAME \
     --warmup_steps 1000 \
     --lambda_align 10.0 \
-    --lambda_reg 0.01 \
+    --lambda_reg 0.1 \
     --lambda_repul 5.0 \
+    --temp_anneal_steps 5000 \
     $@

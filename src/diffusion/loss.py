@@ -123,5 +123,7 @@ class TrinityLoss(nn.Module):
             "dim": l_dim.item(),
             "ortho": l_ortho.item(),
             "div": l_div.item(),
-            "repul": l_repul.item()
+            "repul": l_repul.item(),
+            # actual \mu predict loss for the winner
+            "win_mu_loss": F.mse_loss(mu_win, noise_flat).item()
         }
