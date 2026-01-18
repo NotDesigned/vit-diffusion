@@ -91,11 +91,13 @@ def main():
     
     parser.add_argument("--no_schedule", action='store_true', help="Disable loss schedule")
     
-    # WandB Configs
+    # Logging & WandB Configs
     parser.add_argument("--use_wandb", action='store_true', help="Enable WandB logging")
     parser.add_argument("--wandb_project", type=str, default="vit-diffusion", help="WandB project name")
     parser.add_argument("--wandb_entity", type=str, default=None, help="WandB entity/username")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="WandB specific run name")
+    parser.add_argument("--log_every_epoch", type=int, default=10, help="Log and checkpoint every N epochs")
+    parser.add_argument("--ckpt_every_epoch", type=int, default=10, help="Checkpoint every N epochs")
     
     # Resume
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to checkpoint directory to resume from")
@@ -201,6 +203,8 @@ def main():
         progress_bar = tqdm(enumerate(dataloader), total=len(dataloader), disable=not accelerator.is_local_main_process)
         progress_bar.set_description(f"Epoch {epoch}")
         
+        current_step = epoch * len(dataloader)
+        
         for step, batch in progress_bar:
             if use_vae:
                 # Batch is images (B, 3, H, W)
@@ -252,11 +256,11 @@ def main():
                     reg_weight *= progress
                     repul_weight *= progress # Repulsion also warms up to avoid early instability
                     
-                    # Temperature Annealing
-                    # Sigma GMM: Start High -> End Low
-                    if args.temp_anneal_steps > 0:
-                        temp_progress = min(1.0, current_step / args.temp_anneal_steps)
-                        sigma_gmm = args.sigma_start + (args.sigma_end - args.sigma_start) * temp_progress
+                # Temperature Annealing
+                # Sigma GMM: Start High -> End Low
+                if args.temp_anneal_steps > 0:
+                    temp_progress = min(1.0, current_step / args.temp_anneal_steps)
+                    sigma_gmm = args.sigma_start + (args.sigma_end - args.sigma_start) * temp_progress
                 
                 # pred is (w, mu, U, lam)
                 # target is 'noise' (epsilon)
@@ -290,14 +294,15 @@ def main():
                     
                     accelerator.log(full_log, step=current_step)
                 
-        if epoch % 10 == 0:
-            os.makedirs(args.checkpoint_dir, exist_ok=True)
-            accelerator.save_state(f"{args.checkpoint_dir}/epoch_{epoch}")
-            
+        if epoch % args.log_every_epoch == 0:
             # Validation / Plotting for Synthetic Data
             if args.dataset_type == 'synthetic' and accelerator.is_local_main_process:
                 print(f"Generating samples for epoch {epoch}...")
                 log_synthetic_eval(model, noise_scheduler, device, current_step, args.synthetic_type, wandb_on=args.use_wandb)
+        
+        if epoch % args.ckpt_every_epoch == 0 and accelerator.is_local_main_process:
+            os.makedirs(args.checkpoint_dir, exist_ok=True)
+            accelerator.save_state(f"{args.checkpoint_dir}/epoch_{epoch}")
     
     if args.use_wandb:
         accelerator.end_training()

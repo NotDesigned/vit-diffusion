@@ -8,7 +8,8 @@ export OMP_NUM_THREADS=4
 
 # Config
 DATASET_TYPE="synthetic"
-SYNTHETIC_TYPE="swiss_roll" # Options: 'swiss_roll', '8gaussians', 'checkerboard', 'olympic'
+SYNTHETIC_TYPE=${SYNTHETIC_TYPE:-"swiss_roll"}
+# Options: 'swiss_roll', '8gaussians', 'checkerboard', 'olympic'
 CHECKPOINT_DIR="checkpoints/synthetic"
 MODE="vit" # 'vit' or 'standard'
 
@@ -35,7 +36,7 @@ accelerate launch --mixed_precision="no" train.py \
     --depth 4 \
     --num_heads 4 \
     --vit_num_heads 2 \
-    --vit_rank 2 \
+    --vit_rank 1 \
     --num_epochs $EPOCHS \
     --checkpoint_dir "$CHECKPOINT_DIR" \
     --use_wandb \
@@ -46,4 +47,5 @@ accelerate launch --mixed_precision="no" train.py \
     --lambda_reg 0.1 \
     --lambda_repul 5.0 \
     --temp_anneal_steps 5000 \
+    --log_every_epoch 25 \
     $@

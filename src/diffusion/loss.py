@@ -3,13 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class TrinityLoss(nn.Module):
-    def __init__(self, sigma_gmm=1.0, lambda_align=1.0, lambda_reg=0.01, lambda_div=1.0, lambda_repul=0.5):
+    def __init__(self, sigma_gmm=1.0, lambda_align=1.0, lambda_reg=0.01, lambda_div=1.0, lambda_repul=0.5, only_winner_align=False):
         super().__init__()
         self.sigma_gmm = sigma_gmm
         self.lambda_align = lambda_align
         self.lambda_reg = lambda_reg
         self.lambda_div = lambda_div
         self.lambda_repul = lambda_repul
+        self.only_winner_align = only_winner_align
 
     def forward(self, noise, pred, lambda_align=None, lambda_reg=None, lambda_div=None, lambda_repul=None, sigma_gmm=None):
         """
@@ -88,16 +89,30 @@ class TrinityLoss(nn.Module):
         # L_Align = || \mu - U Lambda U^T \mu ||^2 for winner
         idx_mu = winner_idx.view(B, 1, 1).expand(-1, 1, D) # (B, 1, D)
         mu_win = mu_flat.detach().gather(1, idx_mu).squeeze(1)
-        target = mu_win.view(B, D, 1) # (B, D, 1)
-        U_win = U.gather(1, winner_idx.view(B, 1, 1, 1).expand(-1, 1, D, U.shape[-1])).squeeze(1) # (B, D, R)
-        lam_win = lam.gather(1, winner_idx.view(B, 1, 1).expand(-1, 1, lam.shape[-1])).squeeze(1) # (B, R)
+        if self.only_winner_align: 
+            target = mu_win.view(B, D, 1) # (B, D, 1)
+            U_win = U.gather(1, winner_idx.view(B, 1, 1, 1).expand(-1, 1, D, U.shape[-1])).squeeze(1) # (B, D, R)
+            lam_win = lam.gather(1, winner_idx.view(B, 1, 1).expand(-1, 1, lam.shape[-1])).squeeze(1) # (B, R)
 
-        Ut_t = torch.matmul(U_win.transpose(2, 1), target) # Product: first. U_win.T (B, R, D) x target (B, D, 1) -> (B, R, 1)
-        lam_weighted = Ut_t * lam_win.unsqueeze(2) # (B, R, 1) * (B, R, 1) -> (B, R, 1)
-        
-        recon = torch.matmul(U_win, lam_weighted).squeeze(2) # (B, D, 1) -> (B, D)
+            Ut_t = torch.matmul(U_win.transpose(2, 1), target) # Product: first. U_win.T (B, R, D) x target (B, D, 1) -> (B, R, 1)
+            lam_weighted = Ut_t * lam_win.unsqueeze(2) # (B, R, 1) * (B, R, 1) -> (B, R, 1)
+            
+            recon = torch.matmul(U_win, lam_weighted).squeeze(2) # (B, D, 1) -> (B, D)
 
-        l_align = F.mse_loss(recon, mu_win)
+            l_align = F.mse_loss(recon, mu_win)
+        else:
+            eps_in = noise_flat.view(B, 1, -1, 1) # (B, 1, D, 1)
+            Ut_eps = torch.matmul(U.transpose(2, 3), eps_in).squeeze(-1) # (B, K, R)
+            
+            lam_weighted = lam * Ut_eps # (B, K, R) element-wise
+            
+            projected_noise = torch.matmul(U, lam_weighted.unsqueeze(-1)).squeeze(-1) # (B, K, D)
+            
+            # Error
+            align_err = torch.sum((noise_flat.unsqueeze(1) - projected_noise) ** 2, dim=2) / D # (B, K)
+            
+            # Weighted by w, only fix the alignment, so we detach w
+            l_align = torch.sum(w.detach() * align_err, dim=1).mean() 
         
         # 3. Regularization
         # Sparsity: sum |Lambda|    
