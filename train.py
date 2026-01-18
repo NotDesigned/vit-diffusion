@@ -2,11 +2,12 @@ import torch
 from torch.utils.data import DataLoader, Dataset
 import torch.optim as optim
 from accelerate import Accelerator
+from accelerate.logging import get_logger
 import os
 import argparse
 from tqdm import tqdm
 from torchvision import transforms, datasets
-from diffusers import DDPMScheduler
+from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 import wandb
 
 from src.models import DiT
@@ -56,6 +57,8 @@ def main():
     
     # Training Configs
     parser.add_argument("--mode", type=str, default='vit', choices=['standard', 'vit'], help="Training mode")
+    parser.add_argument("--dataset_type", type=str, default='image_folder', choices=['image_folder', 'synthetic'], help="Dataset type")
+    parser.add_argument("--synthetic_type", type=str, default='swiss_roll', help="Type of synthetic dataset")
     parser.add_argument("--data_path", type=str, default="./data", help="Path to dataset")
     parser.add_argument("--batch_size", type=int, default=8, help="Batch size")
     parser.add_argument("--learning_rate", type=float, default=1e-4, help="Learning rate")
@@ -79,6 +82,12 @@ def main():
     parser.add_argument("--lambda_align", type=float, default=10.0, help="Max weight for alignment loss")
     parser.add_argument("--lambda_reg", type=float, default=0.05, help="Max weight for reg loss")
     parser.add_argument("--lambda_div", type=float, default=1.0, help="Weight for diversity loss")
+    parser.add_argument("--lambda_repul", type=float, default=1, help="Weight for repulsion loss")
+    
+    parser.add_argument("--temp_anneal_steps", type=int, default=20000, help="Steps to heal Sigma GMM")
+    parser.add_argument("--sigma_start", type=float, default=2.0, help="Start Temp")
+    parser.add_argument("--sigma_end", type=float, default=0.1, help="End Temp")
+    
     parser.add_argument("--no_schedule", action='store_true', help="Disable loss schedule")
     
     # WandB Configs
@@ -86,6 +95,9 @@ def main():
     parser.add_argument("--wandb_project", type=str, default="vit-diffusion", help="WandB project name")
     parser.add_argument("--wandb_entity", type=str, default=None, help="WandB entity/username")
     parser.add_argument("--wandb_run_name", type=str, default=None, help="WandB specific run name")
+    
+    # Resume
+    parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to checkpoint directory to resume from")
 
     args = parser.parse_args()
     
@@ -103,23 +115,42 @@ def main():
         )
     
     device = accelerator.device
-    
-    # 1. Models
-    # Scale input_size based on VAE compression (usually /8)
-    # If image is 256, latent is 32.
-    vae = AutoencoderWrapper().to(device)
-    vae.eval()
-    # Freeze VAE
-    for p in vae.parameters():
-        p.requires_grad = False
+
+    # 1. Setup Data & Config
+    if args.dataset_type == 'synthetic':
+        from src.data.synthetic import SyntheticDataset
+        dataset = SyntheticDataset(size=50000, type=args.synthetic_type)
+        dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
         
+        in_channels = 2
+        input_size = 1
+        patch_size = 1
+        use_vae = False
+        vae = None
+    else:
+        # Calculate real image size based on latent input_size * 8 (VAE downsample factor)
+        real_image_size = args.input_size * 8 
+        dataloader = get_dataloader(args.data_path, args.batch_size, real_image_size)
+        
+        in_channels = 4
+        input_size = args.input_size
+        patch_size = args.patch_size
+        use_vae = True
+        
+        # Scale input_size based on VAE compression (usually /8)
+        vae = AutoencoderWrapper().to(device)
+        vae.eval()
+        # Freeze VAE
+        for p in vae.parameters():
+            p.requires_grad = False
+
     # Vit Params dict
     vit_conf = {'num_heads': args.vit_num_heads, 'rank': args.vit_rank} if args.mode == 'vit' else None
 
     model = DiT(
-        input_size=args.input_size, 
-        patch_size=args.patch_size, 
-        in_channels=4, # VAE latent channels
+        input_size=input_size, 
+        patch_size=patch_size, 
+        in_channels=in_channels,
         hidden_size=args.hidden_size,
         depth=args.depth,
         num_heads=args.num_heads,
@@ -129,38 +160,61 @@ def main():
     
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
     
-    # 2. Data
-    # Calculate real image size based on latent input_size * 8 (VAE downsample factor)
-    real_image_size = args.input_size * 8 
-    dataloader = get_dataloader(args.data_path, args.batch_size, real_image_size)
-    
     # Scheduler
     noise_scheduler = DDPMScheduler(num_train_timesteps=1000, beta_start=0.0001, beta_end=0.02, beta_schedule="linear")
 
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
+
+    logger = get_logger(__name__)
+
+    # Resume Checkpoint Logic
+    starting_epoch = 0
+    if args.resume_from_checkpoint:
+        if args.resume_from_checkpoint != "" and os.path.exists(args.resume_from_checkpoint):
+            print(f"Resuming from checkpoint: {args.resume_from_checkpoint}")
+            accelerator.load_state(args.resume_from_checkpoint)
+            # Infer epoch from path if matches 'epoch_\d+'
+            try:
+                base_name = os.path.basename(os.path.normpath(args.resume_from_checkpoint))
+                if base_name.startswith("epoch_"):
+                    starting_epoch = int(base_name.split("_")[1]) + 1
+            except Exception as e:
+                print(f"Could not infer epoch from path, starting from epoch 0. Error: {e}")
+        else:
+             print(f"Checkpoint path {args.resume_from_checkpoint} not found. Starting from scratch.")
     
     # 3. Loss
-    trinity_loss = TrinityLoss(sigma_gmm=args.sigma_gmm, lambda_align=args.lambda_align, lambda_reg=args.lambda_reg, lambda_div=args.lambda_div)
+    trinity_loss = TrinityLoss(
+        sigma_gmm=args.sigma_gmm, 
+        lambda_align=args.lambda_align, 
+        lambda_reg=args.lambda_reg, 
+        lambda_div=args.lambda_div,
+        lambda_repul=args.lambda_repul
+    )
     mse_loss = torch.nn.MSELoss()
     
     print(f"Starting training in mode: {args.mode}")
     
-    for epoch in range(args.num_epochs):
+    for epoch in range(starting_epoch, args.num_epochs):
         model.train()
         progress_bar = tqdm(enumerate(dataloader), total=len(dataloader), disable=not accelerator.is_local_main_process)
         progress_bar.set_description(f"Epoch {epoch}")
         
         for step, batch in progress_bar:
-            # Batch is images (B, 3, H, W)
-            if isinstance(batch, (list, tuple)):
-                 images, _ = batch
-            else:
-                 images = batch
+            if use_vae:
+                # Batch is images (B, 3, H, W)
+                if isinstance(batch, (list, tuple)):
+                     images, _ = batch
+                else:
+                     images = batch
 
-            with torch.no_grad():
-                # Encode to Latents
-                # Note: VAE expects normalized inputs
-                latents = vae.encode(images.to(device, dtype=torch.float16)) # VAE wraps scale factor
+                with torch.no_grad():
+                    # Encode to Latents
+                    # Note: VAE expects normalized inputs
+                    latents = vae.encode(images.to(device, dtype=torch.float16)) # VAE wraps scale factor
+            else:
+                # Batch is (B, C, 1, 1) - from SyntheticDataset
+                latents = batch.to(device)
                 
             # Sample Noise
             noise = torch.randn_like(latents)
@@ -185,6 +239,8 @@ def main():
                 # Warmup Schedule for Auxiliary Losses
                 align_weight = args.lambda_align
                 reg_weight = args.lambda_reg
+                repul_weight = args.lambda_repul
+                sigma_gmm = args.sigma_gmm
                 
                 if not args.no_schedule:
                     warmup_steps = args.warmup_steps
@@ -193,13 +249,22 @@ def main():
                     progress = min(1.0, current_step / warmup_steps)
                     align_weight *= progress
                     reg_weight *= progress
+                    repul_weight *= progress # Repulsion also warms up to avoid early instability
+                    
+                    # Temperature Annealing
+                    # Sigma GMM: Start High -> End Low
+                    if args.temp_anneal_steps > 0:
+                        temp_progress = min(1.0, current_step / args.temp_anneal_steps)
+                        sigma_gmm = args.sigma_start + (args.sigma_end - args.sigma_start) * temp_progress
                 
                 # pred is (w, mu, U, lam)
                 # target is 'noise' (epsilon)
                 loss, loss_dict = trinity_loss(
                     noise, pred, 
                     lambda_align=align_weight, 
-                    lambda_reg=reg_weight
+                    lambda_reg=reg_weight,
+                    lambda_repul=repul_weight,
+                    sigma_gmm=sigma_gmm
                 )
             else:
                 # pred is noise
@@ -215,7 +280,12 @@ def main():
                     full_log = {"train_loss": loss.item(), "epoch": epoch, "step": current_step}
                     full_log.update(loss_dict)
                     if args.mode == 'vit':
-                        full_log.update({"align_weight": align_weight, "reg_weight": reg_weight})
+                        full_log.update({
+                            "align_weight": align_weight, 
+                            "reg_weight": reg_weight, 
+                            "sigma_gmm": sigma_gmm,
+                            "repul_weight": repul_weight
+                        })
                     
                     accelerator.log(full_log, step=current_step)
                 
