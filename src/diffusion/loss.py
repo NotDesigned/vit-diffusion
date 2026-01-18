@@ -13,9 +13,9 @@ class TrinityLoss(nn.Module):
         self.lambda_repul = lambda_repul
         self.only_winner_align = only_winner_align
 
-    def forward(self, noise, pred, lambda_gmm=None, lambda_align=None, lambda_reg=None, lambda_div=None, lambda_repul=None, sigma_gmm=None):
+    def forward(self, x0, pred, lambda_gmm=None, lambda_align=None, lambda_reg=None, lambda_div=None, lambda_repul=None, sigma_gmm=None):
         """
-        noise: (B, C, H, W) - True Gaussian Noise
+        x0: (B, C, H, W) - Ground Truth Sample
         pred: tuple(w, mu, U, lam)
         lambda_* : Optional overrides for weights
         sigma_gmm: Optional override for temperature annealing
@@ -31,25 +31,25 @@ class TrinityLoss(nn.Module):
         w, mu, U, lam = pred
         
         # Cast to float32 for numerical stability in Loss
-        noise = noise.float()
+        x0 = x0.float()
         w = w.float()
         mu = mu.float()
         U = U.float()
         lam = lam.float()
 
         B, K = w.shape
-        # Flatten noise/mu to (B, D) or (B, K, D)
-        noise_flat = noise.flatten(1) # (B, D)
+        # Flatten x0/mu to (B, D) or (B, K, D)
+        x0_flat = x0.flatten(1) # (B, D)
         mu_flat = mu.flatten(2) # (B, K, D)
         
-        D = noise_flat.shape[1]
+        D = x0_flat.shape[1]
 
         # 1. Winner-Takes-All (GMM Loss)
-        # L_GMM = - log( sum( w_k * exp( - ||eps - mu_k||^2 / 2sigma^2 ) ) )
+        # L_GMM = - log( sum( w_k * exp( - ||x0 - mu_k||^2 / 2sigma^2 ) ) )
         
         # Distance squared: (B, K)
         # Normalize by D to make sigma_gmm size-invariant (MSE instead of SSE)
-        d_squared = torch.sum((noise_flat.unsqueeze(1) - mu_flat) ** 2, dim=2) / D
+        d_squared = torch.sum((x0_flat.unsqueeze(1) - mu_flat) ** 2, dim=2) / D
         
         # Log-Sum-Exp trick for numerical stability
         # log( sum( exp( log_wk - d^2/2s^2 ) ) )
@@ -63,7 +63,7 @@ class TrinityLoss(nn.Module):
         # 4. Repulsion Loss (Symmetry Breaking)
         # L_repul = sum_{i!=j} sqrt(w_i w_j) * max(0, cos(mu_i, mu_j))
         # Only compute if K > 1
-        l_repul = torch.tensor(0.0, device=noise.device)
+        l_repul = torch.tensor(0.0, device=x0.device)
         if K > 1:
             # Flatten mu to (B, K, D) which is already mu_flat
             # Normalize mu for cosine similarity: (B, K, D)
@@ -79,7 +79,7 @@ class TrinityLoss(nn.Module):
             gate_matrix = torch.matmul(w_sqrt.unsqueeze(2), w_sqrt.unsqueeze(1))
             
             # Mask diagonal (self-similarity should not be penalized)
-            mask = torch.eye(K, device=noise.device).unsqueeze(0) # (1, K, K)
+            mask = torch.eye(K, device=x0.device).unsqueeze(0) # (1, K, K)
             
             # We want to penalized high similarity (cos close to 1) 
             # only when gate is high (ambiguous region)
@@ -119,7 +119,9 @@ class TrinityLoss(nn.Module):
         
         # 3. Regularization
         # Sparsity: sum |Lambda|    
-        l_dim = torch.mean(torch.abs(lam))
+        # l_dim = torch.mean(torch.abs(lam))
+        # only penalize small eigenvalues to encourage effective rank
+        l_dim = torch.mean(torch.relu(0.1 - lam))
         
         # Orthogonality: || U^T U - I ||^2
         # Ut U: (B, K, R, R)
@@ -132,7 +134,7 @@ class TrinityLoss(nn.Module):
         avg_w = w.mean(dim=0) # (K,)
         l_div = torch.sum(avg_w * torch.log(avg_w + 1e-8)) # Negative Entropy (we want to minimize this -> maximize entropy)
         
-        total_loss = lambda_gmm * l_gmm + lambda_align * l_align + lambda_reg * (l_dim + l_ortho) + lambda_div * l_div + lambda_repul * l_repul
+        total_loss = lambda_gmm * l_gmm + lambda_align * (l_align+ l_ortho) + lambda_reg * l_dim + lambda_div * l_div + lambda_repul * l_repul
         
         return total_loss, {
             "gmm": l_gmm.item(),
@@ -142,5 +144,5 @@ class TrinityLoss(nn.Module):
             "div": l_div.item(),
             "repul": l_repul.item(),
             # actual \mu predict loss for the winner
-            "win_mu_loss": F.mse_loss(mu_win, noise_flat).item()
+            "win_mu_loss": F.mse_loss(mu_win, x0_flat).item()
         }

@@ -38,6 +38,8 @@ accelerate launch --mixed_precision="bf16" train.py \
     --input_size 32 \
     --vit_num_heads 4 \
     --vit_rank 16 \
+    --only_winner_align \
+    --log_every_epoch 2 \
     --num_epochs $EPOCHS \
     --checkpoint_dir "$CHECKPOINT_DIR" \
     --use_wandb \

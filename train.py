@@ -82,10 +82,11 @@ def main():
     # Loss Configs
     parser.add_argument("--warmup_steps", type=int, default=5000, help="Steps to warmup aux losses")
     parser.add_argument("--lambda_gmm", type=float, default=10.0, help="Weight for GMM loss")
-    parser.add_argument("--lambda_align", type=float, default=1.0, help="Max weight for alignment loss")
-    parser.add_argument("--lambda_reg", type=float, default=1.0, help="Max weight for reg loss (dim + ortho)")
+    parser.add_argument("--lambda_align", type=float, default=5.0, help="Max weight for alignment loss")
+    parser.add_argument("--lambda_reg", type=float, default=0.01, help="Max weight for reg loss (dim + ortho)")
     parser.add_argument("--lambda_div", type=float, default=1.0, help="Weight for diversity loss")
     parser.add_argument("--lambda_repul", type=float, default=1.0, help="Weight for repulsion loss")
+    parser.add_argument("--only_winner_align", action='store_true', help="Only align winner head")
     
     parser.add_argument("--temp_anneal_steps", type=int, default=20000, help="Steps to heal Sigma GMM")
     parser.add_argument("--sigma_start", type=float, default=2.0, help="Start Temp")
@@ -166,7 +167,14 @@ def main():
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
     
     # Scheduler
-    noise_scheduler = DDPMScheduler(num_train_timesteps=1000, beta_start=0.0001, beta_end=0.02, beta_schedule="linear")
+    # prediction_type="sample" means the model predicts x_0 (original sample)
+    noise_scheduler = DDPMScheduler(
+        num_train_timesteps=1000, 
+        beta_start=0.0001, 
+        beta_end=0.02, 
+        beta_schedule="linear", 
+        prediction_type="sample" 
+    )
 
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
@@ -195,7 +203,8 @@ def main():
         lambda_align=args.lambda_align, 
         lambda_reg=args.lambda_reg, 
         lambda_div=args.lambda_div,
-        lambda_repul=args.lambda_repul
+        lambda_repul=args.lambda_repul,
+        only_winner_align=args.only_winner_align
     )
     mse_loss = torch.nn.MSELoss()
     
@@ -267,9 +276,9 @@ def main():
                     sigma_gmm = args.sigma_start + (args.sigma_end - args.sigma_start) * temp_progress
                 
                 # pred is (w, mu, U, lam)
-                # target is 'noise' (epsilon)
+                # target is 'latents' (x_0)
                 loss, loss_dict = trinity_loss(
-                    noise, pred,
+                    latents, pred,
                     lambda_gmm=gmm_weight, 
                     lambda_align=align_weight, 
                     lambda_reg=reg_weight,
@@ -278,7 +287,7 @@ def main():
                 )
             else:
                 # pred is noise
-                loss = mse_loss(pred, noise)
+                loss = mse_loss(pred, latents)
                 loss_dict = {'mse': loss.item()}
                 
             accelerator.backward(loss)

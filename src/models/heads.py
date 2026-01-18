@@ -120,7 +120,11 @@ class HydraHead(nn.Module):
         
         U_imgs = self.unpatchify(U_flat, H, W) # (B*K*R, C, H, W)
         U_vecs = U_imgs.flatten(1) # (B*K*R, D)
-        U = U_vecs.view(B, self.K, -1, self.R) # (B, K, D, R)
+        
+        # FIX: Correctly reshape respecting memory layout (B, K, R, D) then permute
+        U = U_vecs.view(B, self.K, self.R, -1) # (B, K, R, D)
+        U = U.permute(0, 1, 3, 2)              # (B, K, D, R)
+        
         # Note: Orthogonality is enforced by loss, not here.
         
         # --- 4. Lambda (Eigen-Strength) ---

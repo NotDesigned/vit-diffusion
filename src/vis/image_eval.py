@@ -37,19 +37,19 @@ def sample_images(model, scheduler, vae, num_samples, device, input_size, in_cha
                     B_sz, K_sz, C, H, W = mu.shape
                     
                     k_expanded = k_indices.view(B_sz, 1, 1, 1, 1).expand(-1, 1, C, H, W)
-                    predicted_noise = torch.gather(mu, 1, k_expanded).squeeze(1)
+                    predicted_sample = torch.gather(mu, 1, k_expanded).squeeze(1)
                     
                 elif strategy == 'mean':
                     # Weighted Mean
                     w_expanded = w.view(num_samples, -1, 1, 1, 1) # (B, K, 1, 1, 1)
-                    predicted_noise = torch.sum(w_expanded * mu, dim=1)
+                    predicted_sample = torch.sum(w_expanded * mu, dim=1)
                 
             else:
                 # Standard DDPM
-                predicted_noise = output
+                predicted_sample = output
                 
         # Step
-        step_output = scheduler.step(predicted_noise, t, latents)
+        step_output = scheduler.step(predicted_sample, t, latents)
         latents = step_output.prev_sample
 
     # Decode latents

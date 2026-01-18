@@ -77,10 +77,11 @@ class SwitchingSDESampler:
             sigma_t = torch.sqrt(beta_t) # Simple option
             
             # Drift part
-            # eps_theta = mu_k
-            pred_eps = mu_k
+            # If model predicts x0 (mu_k is x0), convert to eps for standard formula
+            # eps = (x_t - sqrt(alpha_bar) * x0) / sqrt(1 - alpha_bar)
+            eps_pred = (x - torch.sqrt(alpha_bar_t) * mu_k) / torch.sqrt(1 - alpha_bar_t)
             
-            drift = (x - (1 - alpha_t) / torch.sqrt(1 - alpha_bar_t) * pred_eps) / torch.sqrt(alpha_t)
+            drift = (x - (1 - alpha_t) / torch.sqrt(1 - alpha_bar_t) * eps_pred) / torch.sqrt(alpha_t)
             
             if i < self.num_inference_steps - 1: # No noise at last step usually? Or t > 0
                 # 4. Evolve (Projected Noise)

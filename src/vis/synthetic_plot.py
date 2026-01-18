@@ -33,19 +33,19 @@ def sample_synthetic_2d(model, scheduler, num_samples, device, input_size=1, mod
                     k_indices = torch.multinomial(w, 1) # (B, 1)
                     C, H, W = mu.shape[2:]
                     k_expanded = k_indices.view(num_samples, 1, 1, 1, 1).expand(-1, 1, C, H, W)
-                    predicted_noise = torch.gather(mu, 1, k_expanded).squeeze(1)
+                    predicted_sample = torch.gather(mu, 1, k_expanded).squeeze(1)
                 elif strategy == 'mean':
                     # Weighted Mean: Collapse to mode center
-                    # eps = sum(w * mu)
+                    # x0 = sum(w * mu)
                     w_expanded = w.view(num_samples, -1, 1, 1, 1)
-                    predicted_noise = torch.sum(w_expanded * mu, dim=1)
+                    predicted_sample = torch.sum(w_expanded * mu, dim=1)
                 else:
                     raise ValueError(f"Unknown strategy {strategy}")
 
             else:
-                predicted_noise = output
+                predicted_sample = output
                 
-        step_output = scheduler.step(predicted_noise, t, latents)
+        step_output = scheduler.step(predicted_sample, t, latents)
         latents = step_output.prev_sample
         
     return latents.view(num_samples, 2).cpu().numpy()
@@ -91,13 +91,17 @@ def visualize_vector_field(model, device, t=500, grid_size=20, bounds=(-2, 2)):
             weight = w[i, k]
             if weight < 0.05: continue # Skip weak branches
             
-            vec = mu_vectors[i, k]
-            # Plot arrow
-            # Note: Diffusion predicts 'noise' eps. Direction to data is roughly -eps (simplified).
-            # Actually x_0_hat = (x_t - sqrt(1-alpha)*eps) / sqrt(alpha)
-            # So drift is proportional to -eps.
+            pred_x0 = mu_vectors[i, k]
             
-            ax.arrow(start[0], start[1], -vec[0]*0.1, -vec[1]*0.1, 
+            # Plot arrow
+            # x_t is at 'start'. Predicted x_0 is 'pred_x0'.
+            # Vector is (pred_x0 - start)
+            
+            # We scale the arrow visually to avoid clutter, though physics says it should point to x0.
+            # At high noise, x0 is far, so we might want to scale it down.
+            direction = pred_x0 - start
+            
+            ax.arrow(start[0], start[1], direction[0]*0.2, direction[1]*0.2, 
                      head_width=0.05, head_length=0.1, fc='blue', ec='blue', alpha=float(weight))
                      
     ax.set_xlim(bounds)
