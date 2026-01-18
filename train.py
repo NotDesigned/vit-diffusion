@@ -14,6 +14,7 @@ from src.models import DiT
 from src.diffusion.loss import TrinityLoss
 from src.utils.autoencoder import AutoencoderWrapper
 from src.vis.synthetic_plot import log_synthetic_eval
+from src.vis.image_eval import log_image_eval
 
 def get_dataloader(data_path, batch_size, image_size):
     """
@@ -76,14 +77,15 @@ def main():
     # VIT Specific
     parser.add_argument("--vit_num_heads", type=int, default=4, help="Number of Hydra heads")
     parser.add_argument("--vit_rank", type=int, default=16, help="Rank of local subspace")
-    parser.add_argument("--sigma_gmm", type=float, default=1.0, help="Sigma for GMM loss")
+    parser.add_argument("--sigma_gmm", type=float, default=1.0, help="Sigma for GMM loss, not useful if using annealing")
 
     # Loss Configs
     parser.add_argument("--warmup_steps", type=int, default=5000, help="Steps to warmup aux losses")
-    parser.add_argument("--lambda_align", type=float, default=10.0, help="Max weight for alignment loss")
-    parser.add_argument("--lambda_reg", type=float, default=0.05, help="Max weight for reg loss")
+    parser.add_argument("--lambda_gmm", type=float, default=10.0, help="Weight for GMM loss")
+    parser.add_argument("--lambda_align", type=float, default=1.0, help="Max weight for alignment loss")
+    parser.add_argument("--lambda_reg", type=float, default=1.0, help="Max weight for reg loss (dim + ortho)")
     parser.add_argument("--lambda_div", type=float, default=1.0, help="Weight for diversity loss")
-    parser.add_argument("--lambda_repul", type=float, default=1, help="Weight for repulsion loss")
+    parser.add_argument("--lambda_repul", type=float, default=1.0, help="Weight for repulsion loss")
     
     parser.add_argument("--temp_anneal_steps", type=int, default=20000, help="Steps to heal Sigma GMM")
     parser.add_argument("--sigma_start", type=float, default=2.0, help="Start Temp")
@@ -106,7 +108,7 @@ def main():
     
     print("Loaded config:", args) 
     
-    accelerator = Accelerator(mixed_precision='fp16', log_with="wandb" if args.use_wandb else None)
+    accelerator = Accelerator(log_with="wandb" if args.use_wandb else None)
     
     if args.use_wandb:
         # Convert args to dict for logging config
@@ -188,7 +190,8 @@ def main():
     
     # 3. Loss
     trinity_loss = TrinityLoss(
-        sigma_gmm=args.sigma_gmm, 
+        sigma_gmm=args.sigma_gmm,
+        lambda_gmm=args.lambda_gmm, 
         lambda_align=args.lambda_align, 
         lambda_reg=args.lambda_reg, 
         lambda_div=args.lambda_div,
@@ -242,6 +245,7 @@ def main():
             
             if args.mode == 'vit':
                 # Warmup Schedule for Auxiliary Losses
+                gmm_weight = args.lambda_gmm
                 align_weight = args.lambda_align
                 reg_weight = args.lambda_reg
                 repul_weight = args.lambda_repul
@@ -265,7 +269,8 @@ def main():
                 # pred is (w, mu, U, lam)
                 # target is 'noise' (epsilon)
                 loss, loss_dict = trinity_loss(
-                    noise, pred, 
+                    noise, pred,
+                    lambda_gmm=gmm_weight, 
                     lambda_align=align_weight, 
                     lambda_reg=reg_weight,
                     lambda_repul=repul_weight,
@@ -295,10 +300,15 @@ def main():
                     accelerator.log(full_log, step=current_step)
                 
         if epoch % args.log_every_epoch == 0:
-            # Validation / Plotting for Synthetic Data
-            if args.dataset_type == 'synthetic' and accelerator.is_local_main_process:
-                print(f"Generating samples for epoch {epoch}...")
-                log_synthetic_eval(model, noise_scheduler, device, current_step, args.synthetic_type, wandb_on=args.use_wandb)
+            if accelerator.is_local_main_process:
+                # Validation / Plotting for Synthetic Data
+                if args.dataset_type == 'synthetic':
+                    print(f"Generating synthetic samples for epoch {epoch}...")
+                    log_synthetic_eval(model, noise_scheduler, device, current_step, args.synthetic_type, wandb_on=args.use_wandb)
+                else:
+                    # Validation / Plotting for Image Data
+                    print(f"Generating image samples for epoch {epoch}...")
+                    log_image_eval(model, noise_scheduler, vae, device, current_step, args, wandb_on=args.use_wandb)
         
         if epoch % args.ckpt_every_epoch == 0 and accelerator.is_local_main_process:
             os.makedirs(args.checkpoint_dir, exist_ok=True)

@@ -29,7 +29,8 @@ accelerate launch --mixed_precision="bf16" train.py \
     --data_path "$DATA_PATH" \
     --batch_size $BATCH_SIZE \
     --learning_rate $LR \
-    --sigma_gmm 0.1 \
+    --sigma_start 2.0 \
+    --sigma_end 0.1 \
     --patch_size 2 \
     --hidden_size 384 \
     --depth 12 \

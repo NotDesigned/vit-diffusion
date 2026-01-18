@@ -31,7 +31,8 @@ accelerate launch --mixed_precision="no" train.py \
     --synthetic_type $SYNTHETIC_TYPE \
     --batch_size $BATCH_SIZE \
     --learning_rate $LR \
-    --sigma_gmm 0.05 \
+    --sigma_start 2.0 \
+    --sigma_end 0.1 \
     --hidden_size 128 \
     --depth 4 \
     --num_heads 4 \
