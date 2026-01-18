@@ -1,0 +1,16 @@
+torch>=2.0.0
+torchvision
+diffusers
+transformers
+accelerate
+safetensors
+einops
+hydra-core
+omegaconf
+timm
+torch-fidelity
+scipy
+pandas
+numpy
+tqdm
+wandb
