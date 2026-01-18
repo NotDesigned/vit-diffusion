@@ -173,7 +173,8 @@ def main():
         beta_start=0.0001, 
         beta_end=0.02, 
         beta_schedule="linear", 
-        prediction_type="sample" 
+        prediction_type="sample",
+        clip_sample=False 
     )
 
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
