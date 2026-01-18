@@ -54,7 +54,7 @@ class HydraHead(nn.Module):
         self.out_channels = out_channels
         self.img_size = img_size
         self.patch_size = patch_size
-        self.D = out_channels * img_size * img_size # Total dimension
+        # self.D = out_channels * img_size * img_size # Total dimension
         
         # 1. Branch Probability w: (B, K)
         # We pool the sequence to get a global descriptor
@@ -120,7 +120,7 @@ class HydraHead(nn.Module):
         
         U_imgs = self.unpatchify(U_flat, H, W) # (B*K*R, C, H, W)
         U_vecs = U_imgs.flatten(1) # (B*K*R, D)
-        U = U_vecs.view(B, self.K, self.D, self.R) # (B, K, D, R)
+        U = U_vecs.view(B, self.K, -1, self.R) # (B, K, D, R)
         # Note: Orthogonality is enforced by loss, not here.
         
         # --- 4. Lambda (Eigen-Strength) ---

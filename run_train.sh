@@ -12,7 +12,7 @@ CHECKPOINT_DIR="checkpoints/run_001"
 MODE="vit" # 'vit' or 'standard'
 
 # Hyperparameters
-BATCH_SIZE=16           # Reduced for safety, adjust based on GPU VRAM
+BATCH_SIZE=32           # Reduced for safety, adjust based on GPU VRAM
 LR=1e-4
 EPOCHS=100
 WANDB_PROJECT="vit-diffusion"
@@ -29,6 +29,7 @@ accelerate launch --mixed_precision="bf16" train.py \
     --data_path "$DATA_PATH" \
     --batch_size $BATCH_SIZE \
     --learning_rate $LR \
+    --sigma_gmm 0.1 \
     --patch_size 2 \
     --hidden_size 384 \
     --depth 12 \

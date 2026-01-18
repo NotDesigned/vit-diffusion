@@ -3,13 +3,14 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 class TrinityLoss(nn.Module):
-    def __init__(self, sigma_gmm=1, lambda_align=1.0, lambda_reg=0.01):
+    def __init__(self, sigma_gmm=1, lambda_align=1.0, lambda_reg=0.01, lambda_div=1.0):
         super().__init__()
         self.sigma_gmm = sigma_gmm
         self.lambda_align = lambda_align
         self.lambda_reg = lambda_reg
+        self.lambda_div = lambda_div
 
-    def forward(self, noise, pred, lambda_align=None, lambda_reg=None):
+    def forward(self, noise, pred, lambda_align=None, lambda_reg=None, lambda_div=None):
         """
         noise: (B, C, H, W) - True Gaussian Noise
         pred: tuple(w, mu, U, lam)
@@ -17,6 +18,7 @@ class TrinityLoss(nn.Module):
         """
         if lambda_align is None: lambda_align = self.lambda_align
         if lambda_reg is None: lambda_reg = self.lambda_reg
+        if lambda_div is None: lambda_div = self.lambda_div
 
         w, mu, U, lam = pred
         
@@ -51,33 +53,19 @@ class TrinityLoss(nn.Module):
             winner_idx = torch.argmin(d_squared, dim=1) # (B,)
 
         # 2. Spectral Alignment Loss
-        # L_Align = || eps - (U D U^T) eps ||^2
-        # Only on winner branch to stabilize? Or weighted by w?
-        # Design doc says: "sum w_k * || ... ||^2".
-        # But efficiently: "U_k . (Lam_k . (U_k^T . eps))"
+        # L_Align = || \mu - U Lambda U^T \mu ||^2 for winner
+        idx_mu = winner_idx.view(B, 1, 1).expand(-1, 1, D) # (B, 1, D)
+        mu_win = mu_flat.detach().gather(1, idx_mu).squeeze(1)
+        target = mu_win.view(B, D, 1) # (B, D, 1)
+        U_win = U.gather(1, winner_idx.view(B, 1, 1, 1).expand(-1, 1, D, U.shape[-1])).squeeze(1) # (B, D, R)
+        lam_win = lam.gather(1, winner_idx.view(B, 1, 1).expand(-1, 1, lam.shape[-1])).squeeze(1) # (B, R)
+
+        Ut_t = torch.matmul(U_win.transpose(2, 1), target) # Product: first. U_win.T (B, R, D) x target (B, D, 1) -> (B, R, 1)
+        lam_weighted = Ut_t * lam_win.unsqueeze(2) # (B, R, 1) * (B, R, 1) -> (B, R, 1)
         
-        # Since U is (B, K, D, R), doing this for full D is expensive.
-        # But we must do it.
-        # Let's parallelize over K or select winner? 
-        # Weighted sum is better for differentiability of w.
-        
-        # Compute projection P(eps) = U * Lam * U^T * eps
-        # x1 = U^T * eps -> (B, K, R, D) * (B, 1, D, 1) -> (B, K, R, 1)
-        # x2 = Lam * x1 -> (B, K, R) * (B, K, R) -> (B, K, R)
-        # x3 = U * x2 -> (B, K, D, R) * (B, K, R, 1) -> (B, K, D)
-        
-        eps_in = noise_flat.view(B, 1, -1, 1) # (B, 1, D, 1)
-        Ut_eps = torch.matmul(U.transpose(2, 3), eps_in).squeeze(-1) # (B, K, R)
-        
-        lam_weighted = lam * Ut_eps # (B, K, R) element-wise
-        
-        projected_noise = torch.matmul(U, lam_weighted.unsqueeze(-1)).squeeze(-1) # (B, K, D)
-        
-        # Error
-        align_err = torch.sum((noise_flat.unsqueeze(1) - projected_noise) ** 2, dim=2) / D # (B, K)
-        
-        # Weighted by w, only fix the alignment, so we detach w
-        l_align = torch.sum(w.detach() * align_err, dim=1).mean() 
+        recon = torch.matmul(U_win, lam_weighted).squeeze(2) # (B, D, 1) -> (B, D)
+
+        l_align = F.mse_loss(recon, mu_win)
         
         # 3. Regularization
         # Sparsity: sum |Lambda|    
@@ -94,7 +82,7 @@ class TrinityLoss(nn.Module):
         avg_w = w.mean(dim=0) # (K,)
         l_div = torch.sum(avg_w * torch.log(avg_w + 1e-8)) # Negative Entropy (we want to minimize this -> maximize entropy)
         
-        total_loss = l_gmm + lambda_align * l_align + lambda_reg * (l_dim + l_ortho + l_div)
+        total_loss = l_gmm + lambda_align * l_align + lambda_reg * (l_dim + l_ortho) + lambda_div * l_div
         
         return total_loss, {
             "gmm": l_gmm.item(),

@@ -78,6 +78,7 @@ def main():
     parser.add_argument("--warmup_steps", type=int, default=5000, help="Steps to warmup aux losses")
     parser.add_argument("--lambda_align", type=float, default=10.0, help="Max weight for alignment loss")
     parser.add_argument("--lambda_reg", type=float, default=0.05, help="Max weight for reg loss")
+    parser.add_argument("--lambda_div", type=float, default=1.0, help="Weight for diversity loss")
     parser.add_argument("--no_schedule", action='store_true', help="Disable loss schedule")
     
     # WandB Configs
@@ -139,7 +140,7 @@ def main():
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
     
     # 3. Loss
-    trinity_loss = TrinityLoss(sigma_gmm=args.sigma_gmm)
+    trinity_loss = TrinityLoss(sigma_gmm=args.sigma_gmm, lambda_align=args.lambda_align, lambda_reg=args.lambda_reg, lambda_div=args.lambda_div)
     mse_loss = torch.nn.MSELoss()
     
     print(f"Starting training in mode: {args.mode}")
