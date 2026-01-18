@@ -8,17 +8,17 @@ export OMP_NUM_THREADS=4
 
 # Config
 DATA_PATH="$HOME/.cache/kagglehub/datasets/dimensi0n/afhq-512/versions/1" # Replace with your dataset
+# DATA_PATH="./data/afhq_subset_1k"
 CHECKPOINT_DIR="checkpoints/run_001"
+# RESUME_FROM_CHECKPOINT="$CHECKPOINT_DIR/epoch_60"
 MODE="vit" # 'vit' or 'standard'
 
 # Hyperparameters
 BATCH_SIZE=32           # Reduced for safety, adjust based on GPU VRAM
 LR=1e-4
-EPOCHS=100
+EPOCHS=200
 WANDB_PROJECT="vit-diffusion"
-WANDB_RUN_NAME="run_v1"
-CHECKPOINT_DIR="checkpoints/run_001/"
-RESUME_FROM_CHECKPOINT="$CHECKPOINT_DIR/epoch_60"
+WANDB_RUN_NAME="run_v2"
 
 echo "Starting Training in $MODE mode..."
 echo "Data: $DATA_PATH"
@@ -44,8 +44,10 @@ accelerate launch --mixed_precision="bf16" train.py \
     --use_ema \
     --ema_decay 0.9999 \
     --compute_fid \
-    --fid_num_samples 5000 \
-    --log_every_epoch 2 \
+    --fid_num_samples 1000 \
+    --fid_inference_steps 50 \
+    --log_every_epoch 10 \
+    --ckpt_every_epoch 10 \
     --num_epochs $EPOCHS \
     --checkpoint_dir "$CHECKPOINT_DIR" \
     --use_wandb \

@@ -36,6 +36,10 @@ class AutoencoderWrapper(nn.Module):
         latents: (B, 4, H, W)
         """
         latents = 1 / self.scale_factor * latents
+        # Ensure dtype matches VAE model
+        vae_dtype = next(self.vae.parameters()).dtype
+        latents = latents.to(dtype=vae_dtype)
+        
         with torch.no_grad():
             image = self.vae.decode(latents).sample
         return image

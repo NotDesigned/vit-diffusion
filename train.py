@@ -113,6 +113,7 @@ def main():
     # FID Evaluation (only for image datasets, runs at log_every_epoch)
     parser.add_argument("--compute_fid", action='store_true', help="Compute FID during training (image datasets only)")
     parser.add_argument("--fid_num_samples", type=int, default=5000, help="Number of samples for FID calculation")
+    parser.add_argument("--fid_inference_steps", type=int, default=50, help="Number of denoising steps for FID (default: 50, faster than 1000)")
 
     args = parser.parse_args()
     
@@ -373,7 +374,7 @@ def main():
                     
                     # Compute FID if enabled (only for image datasets)
                     if args.compute_fid and args.dataset_type == 'image_folder':
-                        print(f"Computing FID at epoch {epoch}...")
+                        print(f"Computing FID at epoch {epoch} (using {args.fid_inference_steps} inference steps)...")
                         fid_metrics = compute_fid(
                             model=model,
                             scheduler=noise_scheduler,
@@ -383,7 +384,8 @@ def main():
                             real_dataset_path=args.data_path,
                             temp_dir=f"{args.checkpoint_dir}/fid_temp",
                             mode=args.mode,
-                            strategy='sample'
+                            strategy='sample',
+                            num_inference_steps=args.fid_inference_steps
                         )
                         log_fid_to_wandb(fid_metrics, current_step, wandb_on=args.use_wandb)
                     
