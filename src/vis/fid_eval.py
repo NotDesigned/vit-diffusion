@@ -12,7 +12,7 @@ except ImportError:
     print("Warning: torch-fidelity not installed. FID calculation disabled.")
 
 
-def compute_fid(model, scheduler, vae, num_samples, device, real_dataset_path, temp_dir='./temp_samples', mode='vit', strategy='sample', num_inference_steps=50):
+def compute_fid(model, scheduler, vae, num_samples, device, real_dataset_path, temp_dir='./temp_samples', mode='vit', strategy='sample', num_inference_steps=50, accelerator=None):
     """
     Compute FID between generated samples and real dataset.
     
@@ -27,6 +27,7 @@ def compute_fid(model, scheduler, vae, num_samples, device, real_dataset_path, t
         mode: 'vit' or 'standard'
         strategy: Sampling strategy for VIT mode
         num_inference_steps: Number of denoising steps (default: 50, much faster than 1000)
+        accelerator: Optional Accelerator instance for distributed generation
     
     Returns:
         dict: FID metrics
@@ -34,9 +35,30 @@ def compute_fid(model, scheduler, vae, num_samples, device, real_dataset_path, t
     if not FID_AVAILABLE:
         return {"fid": None, "error": "torch-fidelity not installed"}
     
+    # Determine distributed settings
+    if accelerator is not None:
+        num_processes = accelerator.num_processes
+        process_index = accelerator.process_index
+        is_main_process = accelerator.is_main_process
+    else:
+        num_processes = 1
+        process_index = 0
+        is_main_process = True
+    
+    # Split generation across processes for faster FID computation
+    samples_per_process = num_samples // num_processes
+    start_idx = process_index * samples_per_process
+    
+    # Main process generates remaining samples if num_samples not divisible
+    if is_main_process:
+        samples_per_process += num_samples % num_processes
+    
+    # Each process saves to its own subdirectory to avoid conflicts
+    process_temp_dir = os.path.join(temp_dir, f"rank_{process_index}")
+    
     # Generate samples
-    print(f"Generating {num_samples} samples for FID calculation...")
-    os.makedirs(temp_dir, exist_ok=True)
+    print(f"[Rank {process_index}] Generating {samples_per_process} samples for FID calculation...")
+    os.makedirs(process_temp_dir, exist_ok=True)
     
     model.eval()
     latent_size = 32  # Assuming standard VAE latent size
@@ -44,10 +66,10 @@ def compute_fid(model, scheduler, vae, num_samples, device, real_dataset_path, t
     batch_size = 32  # Small batch to avoid OOM
     
     generated_count = 0
-    pbar = tqdm(total=num_samples, desc="Generating FID samples")
+    pbar = tqdm(total=samples_per_process, desc=f"Generating FID samples (Rank {process_index})", disable=not is_main_process)
     
-    while generated_count < num_samples:
-        current_bs = min(batch_size, num_samples - generated_count)
+    while generated_count < samples_per_process:
+        current_bs = min(batch_size, samples_per_process - generated_count)
         latents = torch.randn(current_bs, in_channels, latent_size, latent_size, device=device)
         
         # Use fewer steps for faster FID computation (50 is standard, 1000 is overkill)
@@ -88,13 +110,21 @@ def compute_fid(model, scheduler, vae, num_samples, device, real_dataset_path, t
         
         # Save images
         for i in range(current_bs):
-            idx = generated_count + i
-            save_image(images[i], os.path.join(temp_dir, f"{idx:05d}.png"))
+            idx = start_idx + generated_count + i
+            save_image(images[i], os.path.join(process_temp_dir, f"{idx:05d}.png"))
         
         generated_count += current_bs
         pbar.update(current_bs)
     
     pbar.close()
+    
+    # Wait for all processes to finish generation
+    if accelerator is not None:
+        accelerator.wait_for_everyone()
+    
+    # Only main process calculates FID using all generated samples
+    if not is_main_process:
+        return {"fid": None, "skipped": "non-main process"}
     
     # Calculate FID
     print("Calculating FID...")
@@ -105,7 +135,7 @@ def compute_fid(model, scheduler, vae, num_samples, device, real_dataset_path, t
             cuda=torch.cuda.is_available(),
             fid=True,
             verbose=False,
-            samples_find_deep=True,  # Allow searching in subdirectories
+            samples_find_deep=True,  # Allow searching in subdirectories (rank_0, rank_1, etc.)
             samples_find_ext='png,jpg,jpeg'  # Specify image extensions
         )
         

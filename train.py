@@ -373,8 +373,10 @@ def main():
                     log_image_eval(model, noise_scheduler, vae, device, current_step, args, wandb_on=args.use_wandb)
                     
                     # Compute FID if enabled (only for image datasets)
+                    # All processes generate samples in parallel for faster FID computation
                     if args.compute_fid and args.dataset_type == 'image_folder':
-                        print(f"Computing FID at epoch {epoch} (using {args.fid_inference_steps} inference steps)...")
+                        if accelerator.is_local_main_process:
+                            print(f"Computing FID at epoch {epoch} (using {args.fid_inference_steps} inference steps, {accelerator.num_processes} GPUs)...")
                         fid_metrics = compute_fid(
                             model=model,
                             scheduler=noise_scheduler,
@@ -385,9 +387,12 @@ def main():
                             temp_dir=f"{args.checkpoint_dir}/fid_temp",
                             mode=args.mode,
                             strategy='sample',
-                            num_inference_steps=args.fid_inference_steps
+                            num_inference_steps=args.fid_inference_steps,
+                            accelerator=accelerator  # Pass accelerator for distributed generation
                         )
-                        log_fid_to_wandb(fid_metrics, current_step, wandb_on=args.use_wandb)
+                        # Only main process logs FID
+                        if accelerator.is_local_main_process:
+                            log_fid_to_wandb(fid_metrics, current_step, wandb_on=args.use_wandb)
                     
                     if args.use_ema:
                         ema_model.restore()
