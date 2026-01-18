@@ -17,6 +17,8 @@ LR=1e-4
 EPOCHS=100
 WANDB_PROJECT="vit-diffusion"
 WANDB_RUN_NAME="run_v1"
+CHECKPOINT_DIR="checkpoints/run_001/"
+RESUME_FROM_CHECKPOINT="$CHECKPOINT_DIR/epoch_60"
 
 echo "Starting Training in $MODE mode..."
 echo "Data: $DATA_PATH"
@@ -39,11 +41,16 @@ accelerate launch --mixed_precision="bf16" train.py \
     --vit_num_heads 4 \
     --vit_rank 16 \
     --only_winner_align \
+    --use_ema \
+    --ema_decay 0.9999 \
+    --compute_fid \
+    --fid_num_samples 5000 \
     --log_every_epoch 2 \
     --num_epochs $EPOCHS \
     --checkpoint_dir "$CHECKPOINT_DIR" \
     --use_wandb \
     --wandb_project $WANDB_PROJECT \
     --wandb_run_name $WANDB_RUN_NAME \
+    --resume_from_checkpoint "$RESUME_FROM_CHECKPOINT" \
     $@
 

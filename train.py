@@ -15,6 +15,7 @@ from src.diffusion.loss import TrinityLoss
 from src.utils.autoencoder import AutoencoderWrapper
 from src.vis.synthetic_plot import log_synthetic_eval
 from src.vis.image_eval import log_image_eval
+from src.vis.fid_eval import compute_fid, log_fid_to_wandb
 
 def get_dataloader(data_path, batch_size, image_size):
     """
@@ -104,6 +105,14 @@ def main():
     
     # Resume
     parser.add_argument("--resume_from_checkpoint", type=str, default=None, help="Path to checkpoint directory to resume from")
+    
+    # EMA (Exponential Moving Average)
+    parser.add_argument("--use_ema", action='store_true', help="Use EMA for model weights")
+    parser.add_argument("--ema_decay", type=float, default=0.9999, help="EMA decay rate")
+    
+    # FID Evaluation (only for image datasets, runs at log_every_epoch)
+    parser.add_argument("--compute_fid", action='store_true', help="Compute FID during training (image datasets only)")
+    parser.add_argument("--fid_num_samples", type=int, default=5000, help="Number of samples for FID calculation")
 
     args = parser.parse_args()
     
@@ -180,6 +189,13 @@ def main():
     model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
 
     logger = get_logger(__name__)
+    
+    # EMA Model (for stable inference)
+    ema_model = None
+    if args.use_ema:
+        from torch_ema import ExponentialMovingAverage
+        ema_model = ExponentialMovingAverage(model.parameters(), decay=args.ema_decay)
+        print(f"EMA enabled with decay={args.ema_decay}")
 
     # Resume Checkpoint Logic
     starting_epoch = 0
@@ -187,11 +203,29 @@ def main():
         if args.resume_from_checkpoint != "" and os.path.exists(args.resume_from_checkpoint):
             print(f"Resuming from checkpoint: {args.resume_from_checkpoint}")
             accelerator.load_state(args.resume_from_checkpoint)
+            
+            # Load EMA state if it exists
+            if args.use_ema:
+                ema_path = os.path.join(args.resume_from_checkpoint, "ema_model.pt")
+                if os.path.exists(ema_path):
+                    ema_model.load_state_dict(torch.load(ema_path, map_location=device))
+                    print("EMA state loaded successfully")
+                else:
+                    print("Warning: EMA checkpoint not found, starting EMA from scratch")
+            
             # Infer epoch from path if matches 'epoch_\d+'
             try:
                 base_name = os.path.basename(os.path.normpath(args.resume_from_checkpoint))
                 if base_name.startswith("epoch_"):
                     starting_epoch = int(base_name.split("_")[1]) + 1
+                    # Ensure checkpoint_dir is the parent directory, not nested
+                    if not args.checkpoint_dir.endswith(base_name):
+                        # Already correct
+                        pass
+                    else:
+                        # Fix: remove the epoch part from checkpoint_dir
+                        args.checkpoint_dir = os.path.dirname(args.resume_from_checkpoint)
+                        print(f"Adjusted checkpoint_dir to: {args.checkpoint_dir}")
             except Exception as e:
                 print(f"Could not infer epoch from path, starting from epoch 0. Error: {e}")
         else:
@@ -294,6 +328,10 @@ def main():
             accelerator.backward(loss)
             optimizer.step()
             
+            # Update EMA
+            if args.use_ema:
+                ema_model.update()
+            
             if step % 10 == 0:
                 progress_bar.set_postfix(**loss_dict)
                 if args.use_wandb:
@@ -314,15 +352,54 @@ def main():
                 # Validation / Plotting for Synthetic Data
                 if args.dataset_type == 'synthetic':
                     print(f"Generating synthetic samples for epoch {epoch}...")
+                    # Use EMA model for evaluation if available
+                    if args.use_ema:
+                        ema_model.store()  # Store current params
+                        ema_model.copy_to()  # Copy EMA params to model
+                    
                     log_synthetic_eval(model, noise_scheduler, device, current_step, args.synthetic_type, wandb_on=args.use_wandb)
+                    
+                    if args.use_ema:
+                        ema_model.restore()  # Restore original params
                 else:
                     # Validation / Plotting for Image Data
                     print(f"Generating image samples for epoch {epoch}...")
+                    # Use EMA model for evaluation if available
+                    if args.use_ema:
+                        ema_model.store()
+                        ema_model.copy_to()
+                    
                     log_image_eval(model, noise_scheduler, vae, device, current_step, args, wandb_on=args.use_wandb)
+                    
+                    # Compute FID if enabled (only for image datasets)
+                    if args.compute_fid and args.dataset_type == 'image_folder':
+                        print(f"Computing FID at epoch {epoch}...")
+                        fid_metrics = compute_fid(
+                            model=model,
+                            scheduler=noise_scheduler,
+                            vae=vae,
+                            num_samples=args.fid_num_samples,
+                            device=device,
+                            real_dataset_path=args.data_path,
+                            temp_dir=f"{args.checkpoint_dir}/fid_temp",
+                            mode=args.mode,
+                            strategy='sample'
+                        )
+                        log_fid_to_wandb(fid_metrics, current_step, wandb_on=args.use_wandb)
+                    
+                    if args.use_ema:
+                        ema_model.restore()
         
         if epoch % args.ckpt_every_epoch == 0 and accelerator.is_local_main_process:
             os.makedirs(args.checkpoint_dir, exist_ok=True)
-            accelerator.save_state(f"{args.checkpoint_dir}/epoch_{epoch}")
+            ckpt_path = f"{args.checkpoint_dir}/epoch_{epoch}"
+            accelerator.save_state(ckpt_path)
+            
+            # Save EMA state separately
+            if args.use_ema:
+                ema_path = os.path.join(ckpt_path, "ema_model.pt")
+                torch.save(ema_model.state_dict(), ema_path)
+                print(f"EMA state saved to {ema_path}")
     
     if args.use_wandb:
         accelerator.end_training()
