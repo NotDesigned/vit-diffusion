@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import math
 
 
 def unpatchify(x, H, W, patch_size, out_channels):
@@ -16,26 +15,6 @@ def unpatchify(x, H, W, patch_size, out_channels):
     x = x.reshape(shape=(x.shape[0], h, w, p, p, out_channels))
     x = torch.einsum('nhwpqc->nchpwq', x)
     return x.reshape(shape=(x.shape[0], out_channels, h * p, w * p))
-
-
-class StandardHead(nn.Module):
-    """
-    Standard Diffusion Head: Predicts the noise/score directly.
-    Output: epsilon (B, C, H, W)
-    """
-    def __init__(self, hidden_size, out_channels, patch_size=2):
-        super().__init__()
-        self.out_channels = out_channels
-        self.patch_size = patch_size
-        # The backbone (DiT) usually outputs (B, L, hidden_size).
-        # We project back to (B, L, patch_size*patch_size*out_channels)
-        # Then unpatchify.
-        self.proj = nn.Linear(hidden_size, patch_size * patch_size * out_channels)
-
-    def forward(self, x, H, W):
-        # x: (B, L, hidden_size)
-        x = self.proj(x)
-        return unpatchify(x, H, W, self.patch_size, self.out_channels)
 
 
 class HydraHead(nn.Module):

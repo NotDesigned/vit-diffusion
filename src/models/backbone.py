@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import math
-from .heads import StandardHead, HydraHead
+from .heads import HydraHead
 
 class DiT(nn.Module):
     """

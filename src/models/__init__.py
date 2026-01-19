@@ -1,2 +1,2 @@
 from .backbone import DiT
-from .heads import HydraHead, StandardHead
+from .heads import HydraHead

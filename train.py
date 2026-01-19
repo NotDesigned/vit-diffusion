@@ -2,7 +2,6 @@ import torch
 from torch.utils.data import DataLoader
 import torch.optim as optim
 from accelerate import Accelerator
-from accelerate.logging import get_logger
 import os
 import argparse
 from contextlib import contextmanager
@@ -236,8 +235,6 @@ def main():
     )
 
     model, optimizer, dataloader, lr_scheduler = accelerator.prepare(model, optimizer, dataloader, lr_scheduler)
-
-    logger = get_logger(__name__)
     
     # EMA Model (for stable inference)
     ema_model = None

@@ -94,9 +94,11 @@ class LatentDataset(Dataset):
         all_labels = []
 
         vae.eval()
+        # Use VAE's actual dtype for consistency
+        vae_dtype = next(vae.parameters()).dtype
         with torch.no_grad():
             for images, labels in tqdm(encode_loader, desc="Encoding images"):
-                images = images.to(device, dtype=torch.float16)
+                images = images.to(device, dtype=vae_dtype)
                 latents = vae.encode(images)
                 # Store as float32 on CPU to save GPU memory
                 all_latents.append(latents.cpu().float())
