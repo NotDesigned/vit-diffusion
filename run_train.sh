@@ -50,11 +50,13 @@ accelerate launch --mixed_precision="bf16" train.py \
     --ckpt_every_epoch 25 \
     --num_epochs $EPOCHS \
     --checkpoint_dir "$CHECKPOINT_DIR" \
+    --lr_scheduler cosine \
+    --lr_warmup_steps 1000 \
     --use_wandb \
     --wandb_project $WANDB_PROJECT \
     --wandb_run_name $WANDB_RUN_NAME \
     --resume_from_checkpoint "$RESUME_FROM_CHECKPOINT" \
     --use_latent_cache \
-    --latent_cache_dir ./my_cache 
+    --latent_cache_dir ./my_cache \
     $@
 

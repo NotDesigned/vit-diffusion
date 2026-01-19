@@ -48,5 +48,8 @@ accelerate launch --mixed_precision="no" train.py \
     --lambda_reg 0.1 \
     --lambda_repul 5.0 \
     --temp_anneal_steps 5000 \
+    --lr_scheduler cosine \
+    --lr_warmup_steps 500 \
     --log_every_epoch 25 \
+    --ckpt_every_epoch 50 \
     $@

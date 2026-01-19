@@ -74,7 +74,12 @@ def main():
     parser.add_argument("--sigma_end", type=float, default=0.1, help="End Temp")
     
     parser.add_argument("--no_schedule", action='store_true', help="Disable loss schedule")
-    
+
+    # Optimizer & Training Stability
+    parser.add_argument("--grad_clip", type=float, default=1.0, help="Gradient clipping max norm (0 to disable)")
+    parser.add_argument("--lr_scheduler", type=str, default="cosine", choices=["cosine", "constant", "linear"], help="Learning rate scheduler type")
+    parser.add_argument("--lr_warmup_steps", type=int, default=0, help="Number of warmup steps for LR scheduler")
+
     # Logging & WandB Configs
     parser.add_argument("--use_wandb", action='store_true', help="Enable WandB logging")
     parser.add_argument("--wandb_project", type=str, default="vit-diffusion", help="WandB project name")
@@ -189,8 +194,37 @@ def main():
     )
     
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
+
+    # Learning Rate Scheduler (step-based with optional warmup)
+    total_steps = args.num_epochs * len(dataloader)
+    warmup_steps = args.lr_warmup_steps
     
-    # Scheduler
+    if args.lr_scheduler == "cosine":
+        from torch.optim.lr_scheduler import CosineAnnealingLR, SequentialLR, LinearLR
+        if warmup_steps > 0:
+            warmup_scheduler = LinearLR(optimizer, start_factor=1e-6, end_factor=1.0, total_iters=warmup_steps)
+            cosine_scheduler = CosineAnnealingLR(optimizer, T_max=total_steps - warmup_steps)
+            lr_scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, cosine_scheduler], milestones=[warmup_steps])
+        else:
+            lr_scheduler = CosineAnnealingLR(optimizer, T_max=total_steps)
+    elif args.lr_scheduler == "linear":
+        from torch.optim.lr_scheduler import LinearLR, SequentialLR
+        if warmup_steps > 0:
+            warmup_scheduler = LinearLR(optimizer, start_factor=1e-6, end_factor=1.0, total_iters=warmup_steps)
+            decay_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=0.0, total_iters=total_steps - warmup_steps)
+            lr_scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, decay_scheduler], milestones=[warmup_steps])
+        else:
+            lr_scheduler = LinearLR(optimizer, start_factor=1.0, end_factor=0.0, total_iters=total_steps)
+    else:  # constant
+        from torch.optim.lr_scheduler import ConstantLR, SequentialLR, LinearLR
+        if warmup_steps > 0:
+            warmup_scheduler = LinearLR(optimizer, start_factor=1e-6, end_factor=1.0, total_iters=warmup_steps)
+            constant_scheduler = ConstantLR(optimizer, factor=1.0, total_iters=total_steps - warmup_steps)
+            lr_scheduler = SequentialLR(optimizer, schedulers=[warmup_scheduler, constant_scheduler], milestones=[warmup_steps])
+        else:
+            lr_scheduler = ConstantLR(optimizer, factor=1.0, total_iters=total_steps)
+
+    # DDPM Noise Scheduler
     # prediction_type="sample" means the model predicts x_0 (original sample)
     noise_scheduler = DDPMScheduler(
         num_train_timesteps=1000, 
@@ -201,7 +235,7 @@ def main():
         clip_sample=False 
     )
 
-    model, optimizer, dataloader = accelerator.prepare(model, optimizer, dataloader)
+    model, optimizer, dataloader, lr_scheduler = accelerator.prepare(model, optimizer, dataloader, lr_scheduler)
 
     logger = get_logger(__name__)
     
@@ -277,8 +311,9 @@ def main():
 
                 with torch.no_grad():
                     # Encode to Latents
-                    # Note: VAE expects normalized inputs
-                    latents = vae.encode(images.to(device, dtype=torch.float16))
+                    # Note: VAE expects normalized inputs, use VAE's actual dtype for consistency
+                    vae_dtype = next(vae.parameters()).dtype
+                    latents = vae.encode(images.to(device, dtype=vae_dtype))
             else:
                 # Batch is pre-encoded latents or synthetic data
                 if isinstance(batch, (list, tuple)):
@@ -351,11 +386,17 @@ def main():
             if args.use_ema:
                 ema_model.update()
             
+            # Update LR scheduler (step-based for warmup compatibility)
+            lr_scheduler.step()
+            
             if step % 10 == 0:
                 progress_bar.set_postfix(**loss_dict)
                 if args.use_wandb:
                     full_log = {"train_loss": loss.item(), "epoch": epoch, "step": current_step}
                     full_log.update(loss_dict)
+                    # Log current learning rate
+                    current_lr = lr_scheduler.get_last_lr()[0]
+                    full_log["learning_rate"] = current_lr
                     if args.mode == 'vit':
                         full_log.update({
                             "align_weight": align_weight, 
