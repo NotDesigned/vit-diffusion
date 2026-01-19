@@ -60,7 +60,8 @@ class DiT(nn.Module):
                 rank=vit_conf.get('rank', 4)
             )
         else:
-            self.head = StandardHead(hidden_size, self.out_channels, patch_size)
+            # Standard DiT uses final layer with adaLN conditioning
+            self.head = DiTFinalLayer(hidden_size, patch_size, self.out_channels)
 
     def initialize_weights(self):
         # Initialize pos_embed
@@ -98,23 +99,15 @@ class DiT(nn.Module):
         
         for block in self.blocks:
             x = block(x, c)
-            
-        # Final Norm done in Blocks/FinalLayer usually?
-        # Standard DiT puts final norm in the final layer
-        # But here we used separated heads.
-        # We'll apply a final LayerNorm before head
-        # (Assuming DiTBlock outputs unnormalized residue or similar, actually DiTBlock has adaLN inside)
-        
-        if self.mode == 'standard':
-            # Use original final layer logic inside StandardHead? 
-            # Or just pass to head.
-            # Standard DiT has a specific final layer module.
-            # Let's use our StandardHead but maybe we need the adaLN part.
-            # For simplicity, we assume 'x' is the semantic representation.
-            pass
-            
-        # Common head interface
-        out = self.head(x, self.input_size, self.input_size)
+
+        # Head forward - different interfaces for different modes
+        if self.mode == 'vit':
+            # HydraHead: (x, H, W) -> (w, mu, U, lam)
+            out = self.head(x, self.input_size, self.input_size)
+        else:
+            # DiTFinalLayer: (x, c, H, W) -> (B, C, H, W) with adaLN conditioning
+            out = self.head(x, c, self.input_size, self.input_size)
+
         return out
 
 class DiTBlock(nn.Module):
@@ -146,6 +139,42 @@ class DiTBlock(nn.Module):
         x_norm = modulate(self.norm2(x), shift_mlp, scale_mlp)
         x = x + gate_mlp.unsqueeze(1) * self.mlp(x_norm)
         return x
+
+
+class DiTFinalLayer(nn.Module):
+    """
+    The final layer of DiT for standard mode.
+    Applies adaptive LayerNorm before final projection.
+    """
+    def __init__(self, hidden_size, patch_size, out_channels):
+        super().__init__()
+        self.patch_size = patch_size
+        self.out_channels = out_channels
+        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
+        self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
+        self.adaLN_modulation = nn.Sequential(
+            nn.SiLU(),
+            nn.Linear(hidden_size, 2 * hidden_size, bias=True)
+        )
+
+    def forward(self, x, c, H, W):
+        """
+        x: (B, L, hidden_size)
+        c: (B, hidden_size) - conditioning
+        Returns: (B, out_channels, H, W)
+        """
+        shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
+        x = modulate(self.norm_final(x), shift, scale)
+        x = self.linear(x)
+        return self._unpatchify(x, H, W)
+
+    def _unpatchify(self, x, H, W):
+        p = self.patch_size
+        h = H // p
+        w = W // p
+        x = x.reshape(shape=(x.shape[0], h, w, p, p, self.out_channels))
+        x = torch.einsum('nhwpqc->nchpwq', x)
+        return x.reshape(shape=(x.shape[0], self.out_channels, h * p, w * p))
 
 
 class TimestepEmbedder(nn.Module):

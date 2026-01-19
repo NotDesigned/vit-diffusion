@@ -361,7 +361,7 @@ def main():
                     sigma_gmm=sigma_gmm
                 )
             else:
-                # pred is noise
+                # pred is x_0 (since prediction_type="sample")
                 loss = mse_loss(pred, latents)
                 loss_dict = {'mse': loss.item()}
                 
@@ -393,7 +393,7 @@ def main():
                 with ema_scope(ema_model, args.use_ema):
                     if args.dataset_type == 'synthetic':
                         print(f"Generating synthetic samples for epoch {epoch}...")
-                        log_synthetic_eval(model, noise_scheduler, device, current_step, args.synthetic_type, wandb_on=args.use_wandb)
+                        log_synthetic_eval(model, noise_scheduler, device, current_step, args.synthetic_type, mode=args.mode, wandb_on=args.use_wandb)
                     else:
                         print(f"Generating image samples for epoch {epoch}...")
                         log_image_eval(model, noise_scheduler, vae, device, current_step, args, wandb_on=args.use_wandb)

@@ -155,41 +155,50 @@ def plot_synthetic_data(samples, title="Generated Data"):
     
     return Image.open(buf)
 
-def log_synthetic_eval(model, scheduler, device, step, type, wandb_on=False):
+def log_synthetic_eval(model, scheduler, device, step, type, mode='vit', wandb_on=False):
     """
     Runs sampling and logs to WandB (if enabled).
+
+    Args:
+        mode: 'vit' or 'standard' - must match model's mode
     """
     if not wandb_on:
         return
 
-    # 1. Probabilistic Sampling (Correct)
-    samples_sample = sample_synthetic_2d(model, scheduler, num_samples=2000, device=device, strategy='sample')
+    # 1. Probabilistic Sampling (for vit mode) or standard sampling
+    samples_sample = sample_synthetic_2d(model, scheduler, num_samples=2000, device=device, mode=mode, strategy='sample')
     image_sample = plot_synthetic_data(samples_sample, title=f"Step {step} - {type} (Sampled)")
-    
-    # 2. Weighted Mean (Naive) - Should fail on multimodal
-    samples_mean = sample_synthetic_2d(model, scheduler, num_samples=2000, device=device, strategy='mean')
-    image_mean = plot_synthetic_data(samples_mean, title=f"Step {step} - {type} (Mean)")
+
+    # 2. Weighted Mean (Naive) - Should fail on multimodal (only for vit mode)
+    if mode == 'vit':
+        samples_mean = sample_synthetic_2d(model, scheduler, num_samples=2000, device=device, mode=mode, strategy='mean')
+        image_mean = plot_synthetic_data(samples_mean, title=f"Step {step} - {type} (Mean)")
     
     # 3. Vector Field Split (Structure)
     # Only meaningful if K > 1
     # image_vf = visualize_vector_field(model, device, t=500) # Replaced by GIF
     
-    if hasattr(model, 'module'):
-        vis_heads = (model.module.head.K > 1) if hasattr(model.module.head, 'K') else False
-    else:
-        vis_heads = (model.head.K > 1) if hasattr(model.head, 'K') else False
-
+    # Build log dict
     log_dict = {
         f"eval/{type}_scatter_sample": wandb.Image(image_sample),
-        f"eval/{type}_scatter_mean": wandb.Image(image_mean)
     }
-    
-    if vis_heads:
-        import tempfile
-        with tempfile.NamedTemporaryFile(suffix='.gif', delete=False) as tmp:
-             gif_path = tmp.name
-        
-        create_vector_field_gif(model, device, save_path=gif_path, num_frames=20)
-        log_dict[f"eval/{type}_diff_process"] = wandb.Video(gif_path, format="gif")
-        
+
+    # Add mean comparison only for vit mode
+    if mode == 'vit':
+        log_dict[f"eval/{type}_scatter_mean"] = wandb.Image(image_mean)
+
+        # Vector field GIF only meaningful for multi-head vit mode
+        if hasattr(model, 'module'):
+            vis_heads = (model.module.head.K > 1) if hasattr(model.module.head, 'K') else False
+        else:
+            vis_heads = (model.head.K > 1) if hasattr(model.head, 'K') else False
+
+        if vis_heads:
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix='.gif', delete=False) as tmp:
+                gif_path = tmp.name
+
+            create_vector_field_gif(model, device, save_path=gif_path, num_frames=20)
+            log_dict[f"eval/{type}_diff_process"] = wandb.Video(gif_path, format="gif")
+
     wandb.log(log_dict, step=step)
