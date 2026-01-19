@@ -7,16 +7,20 @@ class AutoencoderWrapper(nn.Module):
     Wrapper for a pretrained Autoencoder (VAE) from Diffusers.
     We generally freeze this model during training.
     """
-    def __init__(self, model_key="stabilityai/sd-vae-ft-mse", use_fp16=True):
+    def __init__(self, model_key="stabilityai/sd-vae-ft-mse", dtype=None):
+        """
+        Args:
+            model_key: HuggingFace model key for the VAE
+            dtype: torch dtype (e.g., torch.float16, torch.bfloat16).
+                   None = float32, 'auto' = match accelerator mixed precision
+        """
         super().__init__()
         # Load VAE
-        # Usually we download from HF hub. 
-        # Using a standard SD VAE.
         self.vae = AutoencoderKL.from_pretrained(model_key)
-        
-        if use_fp16:
-            self.vae.half()
-        
+
+        if dtype is not None:
+            self.vae.to(dtype=dtype)
+
         self.scale_factor = 0.18215 # Magic number for SD VAE
         
     def encode(self, img):

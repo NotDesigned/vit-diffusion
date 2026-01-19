@@ -132,8 +132,22 @@ def main():
         # Calculate real image size based on latent input_size * 8 (VAE downsample factor)
         real_image_size = args.input_size * 8
 
+        # Determine VAE dtype to match mixed precision training
+        mixed_precision_to_dtype = {
+            "fp16": torch.float16,
+            "bf16": torch.bfloat16,
+            "fp8": torch.float8_e4m3fn,
+            "no": None,  # float32
+        }
+        if accelerator.mixed_precision not in mixed_precision_to_dtype:
+            raise ValueError(
+                f"Unknown mixed_precision setting: {accelerator.mixed_precision}. "
+                f"Supported: {list(mixed_precision_to_dtype.keys())}"
+            )
+        vae_dtype = mixed_precision_to_dtype[accelerator.mixed_precision]
+
         # Scale input_size based on VAE compression (usually /8)
-        vae = AutoencoderWrapper().to(device)
+        vae = AutoencoderWrapper(dtype=vae_dtype).to(device)
         vae.eval()
         # Freeze VAE
         for p in vae.parameters():
