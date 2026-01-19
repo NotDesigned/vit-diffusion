@@ -10,13 +10,13 @@ export OMP_NUM_THREADS=4
 DATA_PATH="$HOME/.cache/kagglehub/datasets/dimensi0n/afhq-512/versions/1" # Replace with your dataset
 # DATA_PATH="./data/afhq_subset_1k"
 CHECKPOINT_DIR="checkpoints/run_001"
-# RESUME_FROM_CHECKPOINT="$CHECKPOINT_DIR/epoch_60"
+# RESUME_FROM_CHECKPOINT="$CHECKPOINT_DIR/epoch_190"
 MODE="vit" # 'vit' or 'standard'
 
 # Hyperparameters
 BATCH_SIZE=32           # Reduced for safety, adjust based on GPU VRAM
 LR=1e-4
-EPOCHS=200
+EPOCHS=500
 WANDB_PROJECT="vit-diffusion"
 WANDB_RUN_NAME="run_v2"
 
@@ -46,13 +46,15 @@ accelerate launch --mixed_precision="bf16" train.py \
     --compute_fid \
     --fid_num_samples 1000 \
     --fid_inference_steps 50 \
-    --log_every_epoch 10 \
-    --ckpt_every_epoch 10 \
+    --log_every_epoch 25 \
+    --ckpt_every_epoch 25 \
     --num_epochs $EPOCHS \
     --checkpoint_dir "$CHECKPOINT_DIR" \
     --use_wandb \
     --wandb_project $WANDB_PROJECT \
     --wandb_run_name $WANDB_RUN_NAME \
     --resume_from_checkpoint "$RESUME_FROM_CHECKPOINT" \
+    --use_latent_cache \
+    --latent_cache_dir ./my_cache 
     $@
 
