@@ -85,7 +85,7 @@ def log_image_eval(model, scheduler, vae, device, step, args, wandb_on=False):
                                     input_size=args.input_size, in_channels=4, 
                                     mode='vit', strategy='sample')
         grid_sample = make_grid(imgs_sample, nrow=4)
-        ndarr_sample = grid_sample.permute(1, 2, 0).cpu().numpy()
+        ndarr_sample = grid_sample.permute(1, 2, 0).float().cpu().numpy()
         img_sample_pil = Image.fromarray((ndarr_sample * 255).astype(np.uint8))
         
         log_dict[f"eval/generated_images_sample"] = wandb.Image(img_sample_pil, caption=f"Step {step} - Sample Strategy")
@@ -95,7 +95,7 @@ def log_image_eval(model, scheduler, vae, device, step, args, wandb_on=False):
                                   input_size=args.input_size, in_channels=4, 
                                   mode='vit', strategy='mean')
         grid_mean = make_grid(imgs_mean, nrow=4)
-        ndarr_mean = grid_mean.permute(1, 2, 0).cpu().numpy()
+        ndarr_mean = grid_mean.permute(1, 2, 0).float().cpu().numpy()
         img_mean_pil = Image.fromarray((ndarr_mean * 255).astype(np.uint8))
         
         log_dict[f"eval/generated_images_mean"] = wandb.Image(img_mean_pil, caption=f"Step {step} - Mean Strategy")
@@ -106,7 +106,7 @@ def log_image_eval(model, scheduler, vae, device, step, args, wandb_on=False):
                              input_size=args.input_size, in_channels=4, 
                              mode='standard')
         grid = make_grid(imgs, nrow=4)
-        ndarr = grid.permute(1, 2, 0).cpu().numpy()
+        ndarr = grid.permute(1, 2, 0).float().cpu().numpy()
         img_pil = Image.fromarray((ndarr * 255).astype(np.uint8))
         log_dict[f"eval/generated_images"] = wandb.Image(img_pil, caption=f"Step {step}")
 
