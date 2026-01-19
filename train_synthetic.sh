@@ -44,9 +44,10 @@ accelerate launch --mixed_precision="no" train.py \
     --wandb_project $WANDB_PROJECT \
     --wandb_run_name $WANDB_RUN_NAME \
     --warmup_steps 1000 \
-    --lambda_align 10.0 \
-    --lambda_reg 0.1 \
-    --lambda_repul 5.0 \
+    --lambda_gmm 10.0 \
+    --lambda_ortho 0.1 \
+    --lambda_div 0 \
+    --lambda_repul 0.1 \
     --temp_anneal_steps 5000 \
     --lr_scheduler cosine \
     --lr_warmup_steps 500 \

@@ -10,6 +10,9 @@ from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 import wandb
 from packaging import version
 
+# Enable TF32 for faster float32 matmul on Ampere+ GPUs
+torch.set_float32_matmul_precision('high')
+
 from src.models import DiT
 from src.diffusion.loss import TrinityLoss
 from src.utils.autoencoder import AutoencoderWrapper
@@ -63,11 +66,9 @@ def main():
     # Loss Configs
     parser.add_argument("--warmup_steps", type=int, default=5000, help="Steps to warmup aux losses")
     parser.add_argument("--lambda_gmm", type=float, default=10.0, help="Weight for GMM loss")
-    parser.add_argument("--lambda_align", type=float, default=5.0, help="Max weight for alignment loss")
-    parser.add_argument("--lambda_reg", type=float, default=0.01, help="Max weight for reg loss (dim + ortho)")
+    parser.add_argument("--lambda_ortho", type=float, default=1.0, help="Weight for orthogonality loss")
     parser.add_argument("--lambda_div", type=float, default=1.0, help="Weight for diversity loss")
     parser.add_argument("--lambda_repul", type=float, default=1.0, help="Weight for repulsion loss")
-    parser.add_argument("--only_winner_align", action='store_true', help="Only align winner head")
     
     parser.add_argument("--temp_anneal_steps", type=int, default=20000, help="Steps to heal Sigma GMM")
     parser.add_argument("--sigma_start", type=float, default=2.0, help="Start Temp")
@@ -133,7 +134,7 @@ def main():
     # 1. Setup Data & Config
     if args.dataset_type == 'synthetic':
         from src.data.synthetic import SyntheticDataset
-        dataset = SyntheticDataset(size=65536*2, type=args.synthetic_type)
+        dataset = SyntheticDataset(size=32768, type=args.synthetic_type)
         dataloader = DataLoader(
             dataset, 
             batch_size=args.batch_size, 
@@ -307,11 +308,9 @@ def main():
     trinity_loss = TrinityLoss(
         sigma_gmm=args.sigma_gmm,
         lambda_gmm=args.lambda_gmm, 
-        lambda_align=args.lambda_align, 
-        lambda_reg=args.lambda_reg, 
+        lambda_ortho=args.lambda_ortho, 
         lambda_div=args.lambda_div,
         lambda_repul=args.lambda_repul,
-        only_winner_align=args.only_winner_align
     )
     mse_loss = torch.nn.MSELoss()
     
@@ -369,8 +368,7 @@ def main():
                 if args.mode == 'vit':
                     # Warmup Schedule for Auxiliary Losses
                     gmm_weight = args.lambda_gmm
-                    align_weight = args.lambda_align
-                    reg_weight = args.lambda_reg
+                    ortho_weight = args.lambda_ortho
                     repul_weight = args.lambda_repul
                     sigma_gmm = args.sigma_gmm
                     
@@ -379,8 +377,7 @@ def main():
                         
                         # Ramping up from 0 to target
                         progress = min(1.0, current_step / warmup_steps)
-                        align_weight *= progress
-                        reg_weight *= progress
+                        ortho_weight *= progress
                         repul_weight *= progress # Repulsion also warms up to avoid early instability
                         
                     # Temperature Annealing
@@ -389,13 +386,12 @@ def main():
                         temp_progress = min(1.0, current_step / args.temp_anneal_steps)
                         sigma_gmm = args.sigma_start + (args.sigma_end - args.sigma_start) * temp_progress
                     
-                    # pred is (w, mu, U, lam)
+                    # pred is (w, mu, U)
                     # target is 'latents' (x_0)
                     loss, loss_dict = trinity_loss(
                         latents, pred,
                         lambda_gmm=gmm_weight, 
-                        lambda_align=align_weight, 
-                        lambda_reg=reg_weight,
+                        lambda_ortho=ortho_weight,
                         lambda_repul=repul_weight,
                         sigma_gmm=sigma_gmm
                     )
@@ -430,10 +426,10 @@ def main():
                     full_log["learning_rate"] = current_lr
                     if args.mode == 'vit':
                         full_log.update({
-                            "align_weight": align_weight, 
-                            "reg_weight": reg_weight, 
-                            "sigma_gmm": sigma_gmm,
-                            "repul_weight": repul_weight
+                            "ortho_weight": ortho_weight, 
+                            "repul_weight": repul_weight,
+                            "gmm_weight": gmm_weight,
+                            "sigma_gmm": sigma_gmm
                         })
                     
                     accelerator.log(full_log, step=current_step)

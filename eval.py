@@ -56,7 +56,7 @@ def generate_samples(model, scheduler, vae, num_samples, batch_size, device, out
                 output = model(latents, timesteps, None)
                 
                 if mode == 'vit':
-                    w, mu, U, lam = output
+                    w, mu, U = output
                     
                     if strategy == 'sample':
                         # Probabilistic: sample one head per batch item

@@ -81,7 +81,7 @@ def compute_fid(model, scheduler, vae, num_samples, device, real_dataset_path, t
                 output = model(latents, timesteps, None)
                 
                 if mode == 'vit':
-                    w, mu, U, lam = output
+                    w, mu, U = output
                     
                     if strategy == 'sample':
                         k_indices = torch.multinomial(w, 1)

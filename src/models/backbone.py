@@ -102,8 +102,8 @@ class DiT(nn.Module):
 
         # Head forward - different interfaces for different modes
         if self.mode == 'vit':
-            # HydraHead: (x, H, W) -> (w, mu, U, lam)
-            out = self.head(x, self.input_size, self.input_size)
+            # HydraHead: (x, c, H, W) -> (w, mu, U)
+            out = self.head(x, c, self.input_size, self.input_size)
         else:
             # DiTFinalLayer: (x, c, H, W) -> (B, C, H, W) with adaLN conditioning
             out = self.head(x, c, self.input_size, self.input_size)

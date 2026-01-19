@@ -26,7 +26,7 @@ def sample_synthetic_2d(model, scheduler, num_samples, device, input_size=1, mod
             output = model(latents, timesteps, None)
             
             if mode == 'vit':
-                w, mu, U, lam = output
+                w, mu, U = output
                 
                 if strategy == 'sample':
                     # Probabilistic Sampling: Pick one head per sample based on w
@@ -66,7 +66,7 @@ def visualize_vector_field(model, device, t=500, grid_size=20, bounds=(-2, 2)):
     timesteps = torch.full((B,), t, device=device, dtype=torch.long)
     
     with torch.inference_mode():
-        w, mu, U, lam = model(latents, timesteps, None)
+        w, mu, U = model(latents, timesteps, None)
         # w: (B, K)
         # mu: (B, K, 2, 1, 1)
     

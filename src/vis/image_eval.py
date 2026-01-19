@@ -25,7 +25,7 @@ def sample_images(model, scheduler, vae, num_samples, device, input_size, in_cha
             output = model(latents, timesteps, None)
             
             if mode == 'vit':
-                w, mu, U, lam = output
+                w, mu, U = output
                 
                 if strategy == 'sample':
                     # Probabilistic Sampling
