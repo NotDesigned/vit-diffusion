@@ -30,7 +30,7 @@ def compute_gmm_loss(x0_flat, mu_flat, w, sigma_gmm):
     
     # Log-Sum-Exp trick for numerical stability
     logits = torch.log(w + 1e-8) - d_squared / (2 * sigma_gmm**2)
-    l_gmm = -torch.logsumexp(logits, dim=1).mean()
+    l_gmm = -torch.logsumexp(logits, dim=1).mean() * (sigma_gmm**2)
     
     return l_gmm, d_squared
 

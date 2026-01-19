@@ -10,11 +10,11 @@ export OMP_NUM_THREADS=4
 DATA_PATH="$HOME/.cache/kagglehub/datasets/dimensi0n/afhq-512/versions/1" # Replace with your dataset
 # DATA_PATH="./data/afhq_subset_1k"
 CHECKPOINT_DIR="checkpoints/run_001"
-# RESUME_FROM_CHECKPOINT="$CHECKPOINT_DIR/epoch_190"
+RESUME_FROM_CHECKPOINT=""
 MODE="vit" # 'vit' or 'standard'
 
 # Hyperparameters
-BATCH_SIZE=64
+BATCH_SIZE=32
 LR=1e-4
 EPOCHS=500
 WANDB_PROJECT="vit-diffusion"
