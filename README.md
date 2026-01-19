@@ -73,6 +73,42 @@ The script supports resuming from the last checkpoint automatically if provided.
 ./run_train.sh --resume_from_checkpoint checkpoints/run_001/epoch_50
 ```
 
+### 3.3 Docker Multi-GPU Training (Recommended for Production)
+
+一键 Docker 训练脚本，自动拉取镜像、配置环境、启动多卡训练：
+
+```bash
+# VIT 模式，自动检测所有 GPU
+./docker_train.sh --mode vit
+
+# 标准模式，指定 4 卡 + WandB
+./docker_train.sh --mode standard --gpus 4 --wandb --wandb-key YOUR_KEY
+
+# 自定义参数
+./docker_train.sh --mode vit --batch-size 64 --epochs 1000 --data-dir /path/to/data
+
+# 交互式 shell 调试
+./docker_train.sh --shell
+```
+
+**Docker 参数说明**:
+| Option | Default | Description |
+| :--- | :--- | :--- |
+| `--mode` | `vit` | 训练模式: `vit` 或 `standard` |
+| `--gpus` | auto | GPU 数量 (自动检测) |
+| `--batch-size` | `32` | 每卡 batch size |
+| `--epochs` | `500` | 训练轮数 |
+| `--data-dir` | `~/.cache/kagglehub` | 数据集目录 |
+| `--output-dir` | `./checkpoints` | 输出目录 |
+| `--wandb` | off | 启用 WandB 日志 |
+| `--mixed-precision` | `bf16` | 混合精度: `bf16`, `fp16`, `no` |
+| `--shell` | - | 进入交互式 shell |
+
+**环境变量方式**:
+```bash
+DATA_DIR=/data/afhq NUM_GPUS=8 WANDB_API_KEY=xxx ./docker_train.sh --mode vit --wandb
+```
+
 ---
 
 ## 4. Configuration & Hyperparameters
