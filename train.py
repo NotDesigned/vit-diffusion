@@ -101,7 +101,7 @@ def main():
     parser.add_argument("--fid_inference_steps", type=int, default=50, help="Number of denoising steps for FID (default: 50, faster than 1000)")
 
     # Performance Optimization
-    parser.add_argument("--use_compile", action='store_true', help="Use torch.compile for model optimization (PyTorch 2.0+)")
+    parser.add_argument("--no_compile", action='store_true', help="Disable torch.compile")
     parser.add_argument("--compile_mode", type=str, default="reduce-overhead", choices=["default", "reduce-overhead", "max-autotune"], help="torch.compile mode")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Number of gradient accumulation steps")
 
@@ -209,7 +209,9 @@ def main():
     )
     
     # torch.compile optimization (PyTorch 2.0+)
-    if args.use_compile:
+    # Default enabled, use --no_compile to disable
+    use_compile = not args.no_compile
+    if use_compile:
         if version.parse(torch.__version__) >= version.parse("2.0.0"):
             print(f"Compiling model with mode='{args.compile_mode}'...")
             model = torch.compile(model, mode=args.compile_mode)
