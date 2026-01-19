@@ -1,5 +1,5 @@
 import torch
-from torch.utils.data import DataLoader, Dataset
+from torch.utils.data import DataLoader
 import torch.optim as optim
 from accelerate import Accelerator
 from accelerate.logging import get_logger
@@ -7,9 +7,17 @@ import os
 import argparse
 from contextlib import contextmanager
 from tqdm import tqdm
-from torchvision import transforms, datasets
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 import wandb
+
+from src.models import DiT
+from src.diffusion.loss import TrinityLoss
+from src.utils.autoencoder import AutoencoderWrapper
+from src.vis.synthetic_plot import log_synthetic_eval
+from src.vis.image_eval import log_image_eval
+from src.vis.fid_eval import compute_fid, log_fid_to_wandb
+from src.data.latent_dataset import get_latent_dataloader
+from src.data.image_dataset import get_image_dataloader
 
 
 @contextmanager
@@ -24,49 +32,6 @@ def ema_scope(ema_model, use_ema):
         if use_ema and ema_model is not None:
             ema_model.restore()
 
-from src.models import DiT
-from src.diffusion.loss import TrinityLoss
-from src.utils.autoencoder import AutoencoderWrapper
-from src.vis.synthetic_plot import log_synthetic_eval
-from src.vis.image_eval import log_image_eval
-from src.vis.fid_eval import compute_fid, log_fid_to_wandb
-from src.data.latent_dataset import get_latent_dataloader
-
-def get_dataloader(data_path, batch_size, image_size):
-    """
-    Creates a dataloader for a directory of images.
-    Structure should be:
-    primary_dir/
-      class_A/
-        img1.jpg
-        ...
-      class_B/
-        ...
-    """
-    # If path doesn't exist or is empty, fallback to Dummy for testing
-    if not os.path.exists(data_path):
-        print(f"Warning: Data path {data_path} not found. Using Dummy Dataset.")
-        dataset = DummyDataset(size=image_size, length=100)
-    else:
-        transform = transforms.Compose([
-            transforms.Resize(image_size),
-            transforms.CenterCrop(image_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5]) # Map to [-1, 1]
-        ])
-        dataset = datasets.ImageFolder(root=data_path, transform=transform)
-    
-    return DataLoader(dataset, batch_size=batch_size, shuffle=True, num_workers=4, pin_memory=True)
-
-class DummyDataset(Dataset):
-    def __init__(self, size=32, length=100):
-        self.data = torch.randn(length, 3, 256, 256) # Returns Dummy Images
-        
-    def __getitem__(self, idx):
-        return self.data[idx]
-
-    def __len__(self):
-        return len(self.data)
 
 def main():
     parser = argparse.ArgumentParser()
@@ -188,7 +153,7 @@ def main():
             )
             use_vae = False  # Latents are already encoded
         else:
-            dataloader = get_dataloader(args.data_path, args.batch_size, real_image_size)
+            dataloader = get_image_dataloader(args.data_path, args.batch_size, real_image_size)
             use_vae = True
 
         in_channels = 4
