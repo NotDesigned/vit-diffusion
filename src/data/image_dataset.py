@@ -54,5 +54,6 @@ def get_image_dataloader(data_path, batch_size, image_size):
         batch_size=batch_size,
         shuffle=True,
         num_workers=4,
-        pin_memory=True
+        pin_memory=True,
+        persistent_workers=True
     )

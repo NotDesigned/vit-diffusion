@@ -8,6 +8,7 @@ from contextlib import contextmanager
 from tqdm import tqdm
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 import wandb
+from packaging import version
 
 from src.models import DiT
 from src.diffusion.loss import TrinityLoss
@@ -99,6 +100,11 @@ def main():
     parser.add_argument("--fid_num_samples", type=int, default=5000, help="Number of samples for FID calculation")
     parser.add_argument("--fid_inference_steps", type=int, default=50, help="Number of denoising steps for FID (default: 50, faster than 1000)")
 
+    # Performance Optimization
+    parser.add_argument("--use_compile", action='store_true', help="Use torch.compile for model optimization (PyTorch 2.0+)")
+    parser.add_argument("--compile_mode", type=str, default="reduce-overhead", choices=["default", "reduce-overhead", "max-autotune"], help="torch.compile mode")
+    parser.add_argument("--gradient_accumulation_steps", type=int, default=1, help="Number of gradient accumulation steps")
+
     # Latent caching (speeds up training by pre-encoding images)
     parser.add_argument("--use_latent_cache", action='store_true', help="Pre-encode images to latent space and cache to disk")
     parser.add_argument("--latent_cache_dir", type=str, default=None, help="Directory for latent cache (default: data_path/.latent_cache)")
@@ -108,7 +114,10 @@ def main():
     
     print("Loaded config:", args) 
     
-    accelerator = Accelerator(log_with="wandb" if args.use_wandb else None)
+    accelerator = Accelerator(
+        log_with="wandb" if args.use_wandb else None,
+        gradient_accumulation_steps=args.gradient_accumulation_steps
+    )
     
     if args.use_wandb:
         # Convert args to dict for logging config
@@ -125,7 +134,14 @@ def main():
     if args.dataset_type == 'synthetic':
         from src.data.synthetic import SyntheticDataset
         dataset = SyntheticDataset(size=65536*2, type=args.synthetic_type)
-        dataloader = DataLoader(dataset, batch_size=args.batch_size, shuffle=True, num_workers=4)
+        dataloader = DataLoader(
+            dataset, 
+            batch_size=args.batch_size, 
+            shuffle=True, 
+            num_workers=4,
+            persistent_workers=True,
+            pin_memory=True
+        )
         
         in_channels = 2
         input_size = 1
@@ -191,6 +207,14 @@ def main():
         mode=args.mode,
         vit_conf=vit_conf
     )
+    
+    # torch.compile optimization (PyTorch 2.0+)
+    if args.use_compile:
+        if version.parse(torch.__version__) >= version.parse("2.0.0"):
+            print(f"Compiling model with mode='{args.compile_mode}'...")
+            model = torch.compile(model, mode=args.compile_mode)
+        else:
+            print(f"Warning: torch.compile requires PyTorch 2.0+, got {torch.__version__}. Skipping.")
     
     optimizer = optim.AdamW(model.parameters(), lr=args.learning_rate)
 
@@ -299,96 +323,104 @@ def main():
         current_step = epoch * len(dataloader)
         
         for step, batch in progress_bar:
-            if use_vae:
-                # Batch is images (B, 3, H, W) - need VAE encoding
-                if isinstance(batch, (list, tuple)):
-                    images, _ = batch
-                else:
-                    images = batch
+            # Gradient accumulation context (handles loss scaling and sync)
+            with accelerator.accumulate(model):
+                if use_vae:
+                    # Batch is images (B, 3, H, W) - need VAE encoding
+                    if isinstance(batch, (list, tuple)):
+                        images, _ = batch
+                    else:
+                        images = batch
 
-                with torch.no_grad():
-                    # Encode to Latents
-                    # Note: VAE expects normalized inputs, use VAE's actual dtype for consistency
-                    vae_dtype = next(vae.parameters()).dtype
-                    latents = vae.encode(images.to(device, dtype=vae_dtype))
-            else:
-                # Batch is pre-encoded latents or synthetic data
-                if isinstance(batch, (list, tuple)):
-                    latents, _ = batch
+                    with torch.no_grad():
+                        # Encode to Latents
+                        # Note: VAE expects normalized inputs, use VAE's actual dtype for consistency
+                        vae_dtype = next(vae.parameters()).dtype
+                        latents = vae.encode(images.to(device, dtype=vae_dtype))
                 else:
-                    latents = batch
-                latents = latents.to(device)
-                
-            # Sample Noise
-            noise = torch.randn_like(latents)
-            bs = latents.shape[0]
-            
-            # Sample Timesteps
-            timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bs,), device=device).long()
-            
-            # Add Noise using Scheduler
-            noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
-            
-            optimizer.zero_grad()
-            
-            # Predict
-            # Model takes (x, t, y=None)
-            pred = model(noisy_latents, timesteps, None)
-            
-            loss = 0
-            current_step = epoch * len(dataloader) + step
-            
-            if args.mode == 'vit':
-                # Warmup Schedule for Auxiliary Losses
-                gmm_weight = args.lambda_gmm
-                align_weight = args.lambda_align
-                reg_weight = args.lambda_reg
-                repul_weight = args.lambda_repul
-                sigma_gmm = args.sigma_gmm
-                
-                if not args.no_schedule:
-                    warmup_steps = args.warmup_steps
+                    # Batch is pre-encoded latents or synthetic data
+                    if isinstance(batch, (list, tuple)):
+                        latents, _ = batch
+                    else:
+                        latents = batch
+                    latents = latents.to(device)
                     
-                    # Ramping up from 0 to target
-                    progress = min(1.0, current_step / warmup_steps)
-                    align_weight *= progress
-                    reg_weight *= progress
-                    repul_weight *= progress # Repulsion also warms up to avoid early instability
+                # Sample Noise
+                noise = torch.randn_like(latents)
+                bs = latents.shape[0]
+                
+                # Sample Timesteps
+                timesteps = torch.randint(0, noise_scheduler.config.num_train_timesteps, (bs,), device=device).long()
+                
+                # Add Noise using Scheduler
+                noisy_latents = noise_scheduler.add_noise(latents, noise, timesteps)
+                
+                optimizer.zero_grad()
+                
+                # Predict
+                # Model takes (x, t, y=None)
+                pred = model(noisy_latents, timesteps, None)
+                
+                loss = 0
+                current_step = epoch * len(dataloader) + step
+                
+                if args.mode == 'vit':
+                    # Warmup Schedule for Auxiliary Losses
+                    gmm_weight = args.lambda_gmm
+                    align_weight = args.lambda_align
+                    reg_weight = args.lambda_reg
+                    repul_weight = args.lambda_repul
+                    sigma_gmm = args.sigma_gmm
                     
-                # Temperature Annealing
-                # Sigma GMM: Start High -> End Low
-                if args.temp_anneal_steps > 0:
-                    temp_progress = min(1.0, current_step / args.temp_anneal_steps)
-                    sigma_gmm = args.sigma_start + (args.sigma_end - args.sigma_start) * temp_progress
+                    if not args.no_schedule:
+                        warmup_steps = args.warmup_steps
+                        
+                        # Ramping up from 0 to target
+                        progress = min(1.0, current_step / warmup_steps)
+                        align_weight *= progress
+                        reg_weight *= progress
+                        repul_weight *= progress # Repulsion also warms up to avoid early instability
+                        
+                    # Temperature Annealing
+                    # Sigma GMM: Start High -> End Low
+                    if args.temp_anneal_steps > 0:
+                        temp_progress = min(1.0, current_step / args.temp_anneal_steps)
+                        sigma_gmm = args.sigma_start + (args.sigma_end - args.sigma_start) * temp_progress
+                    
+                    # pred is (w, mu, U, lam)
+                    # target is 'latents' (x_0)
+                    loss, loss_dict = trinity_loss(
+                        latents, pred,
+                        lambda_gmm=gmm_weight, 
+                        lambda_align=align_weight, 
+                        lambda_reg=reg_weight,
+                        lambda_repul=repul_weight,
+                        sigma_gmm=sigma_gmm
+                    )
+                else:
+                    # pred is x_0 (since prediction_type="sample")
+                    loss = mse_loss(pred, latents)
+                    loss_dict = {'mse': loss.item()}
+                    
+                accelerator.backward(loss)
                 
-                # pred is (w, mu, U, lam)
-                # target is 'latents' (x_0)
-                loss, loss_dict = trinity_loss(
-                    latents, pred,
-                    lambda_gmm=gmm_weight, 
-                    lambda_align=align_weight, 
-                    lambda_reg=reg_weight,
-                    lambda_repul=repul_weight,
-                    sigma_gmm=sigma_gmm
-                )
-            else:
-                # pred is x_0 (since prediction_type="sample")
-                loss = mse_loss(pred, latents)
-                loss_dict = {'mse': loss.item()}
+                # Gradient clipping (if enabled)
+                if args.grad_clip > 0:
+                    accelerator.clip_grad_norm_(model.parameters(), args.grad_clip)
                 
-            accelerator.backward(loss)
-            optimizer.step()
-            
-            # Update EMA
-            if args.use_ema:
-                ema_model.update()
-            
-            # Update LR scheduler (step-based for warmup compatibility)
-            lr_scheduler.step()
+                optimizer.step()
+                
+                # Update EMA (only after actual optimizer step, not accumulation steps)
+                if args.use_ema and accelerator.sync_gradients:
+                    ema_model.update()
+                
+                # Update LR scheduler (only after actual optimizer step)
+                if accelerator.sync_gradients:
+                    lr_scheduler.step()
             
             if step % 10 == 0:
                 progress_bar.set_postfix(**loss_dict)
-                if args.use_wandb:
+                if args.use_wandb and accelerator.is_main_process:
                     full_log = {"train_loss": loss.item(), "epoch": epoch, "step": current_step}
                     full_log.update(loss_dict)
                     # Log current learning rate
@@ -403,39 +435,43 @@ def main():
                         })
                     
                     accelerator.log(full_log, step=current_step)
-                
-        if epoch % args.log_every_epoch == 0:
-            if accelerator.is_local_main_process:
-                # Validation / Plotting
-                with ema_scope(ema_model, args.use_ema):
-                    if args.dataset_type == 'synthetic':
-                        print(f"Generating synthetic samples for epoch {epoch}...")
-                        log_synthetic_eval(model, noise_scheduler, device, current_step, args.synthetic_type, mode=args.mode, wandb_on=args.use_wandb)
-                    else:
-                        print(f"Generating image samples for epoch {epoch}...")
-                        log_image_eval(model, noise_scheduler, vae, device, current_step, args, wandb_on=args.use_wandb)
-
-                        # Compute FID if enabled (only for image datasets)
-                        if args.compute_fid and args.dataset_type == 'image_folder':
-                            if accelerator.is_local_main_process:
-                                print(f"Computing FID at epoch {epoch} (using {args.fid_inference_steps} inference steps, {accelerator.num_processes} GPUs)...")
-                            fid_metrics = compute_fid(
-                                model=model,
-                                scheduler=noise_scheduler,
-                                vae=vae,
-                                num_samples=args.fid_num_samples,
-                                device=device,
-                                real_dataset_path=args.data_path,
-                                temp_dir=f"{args.checkpoint_dir}/fid_temp",
-                                mode=args.mode,
-                                strategy='sample',
-                                num_inference_steps=args.fid_inference_steps,
-                                accelerator=accelerator
-                            )
-                            if accelerator.is_local_main_process:
-                                log_fid_to_wandb(fid_metrics, current_step, wandb_on=args.use_wandb)
         
-        if epoch % args.ckpt_every_epoch == 0 and accelerator.is_local_main_process:
+        # Synchronize before evaluation to ensure all processes are at same point
+        accelerator.wait_for_everyone()
+                
+        if epoch % args.log_every_epoch == 0 and accelerator.is_main_process:
+            # Validation / Plotting (main process only)
+            with ema_scope(ema_model, args.use_ema):
+                if args.dataset_type == 'synthetic':
+                    print(f"Generating synthetic samples for epoch {epoch}...")
+                    log_synthetic_eval(model, noise_scheduler, device, current_step, args.synthetic_type, mode=args.mode, wandb_on=args.use_wandb)
+                else:
+                    print(f"Generating image samples for epoch {epoch}...")
+                    log_image_eval(model, noise_scheduler, vae, device, current_step, args, wandb_on=args.use_wandb)
+
+                    # Compute FID if enabled (only for image datasets)
+                    # Note: FID uses all processes for generation, but only main calculates metric
+                    if args.compute_fid and args.dataset_type == 'image_folder':
+                        print(f"Computing FID at epoch {epoch} (using {args.fid_inference_steps} inference steps)...")
+                        fid_metrics = compute_fid(
+                            model=model,
+                            scheduler=noise_scheduler,
+                            vae=vae,
+                            num_samples=args.fid_num_samples,
+                            device=device,
+                            real_dataset_path=args.data_path,
+                            temp_dir=f"{args.checkpoint_dir}/fid_temp",
+                            mode=args.mode,
+                            strategy='sample',
+                            num_inference_steps=args.fid_inference_steps,
+                            accelerator=accelerator
+                        )
+                        log_fid_to_wandb(fid_metrics, current_step, wandb_on=args.use_wandb)
+        
+        # Synchronize before checkpoint saving
+        accelerator.wait_for_everyone()
+        
+        if epoch % args.ckpt_every_epoch == 0 and accelerator.is_main_process:
             os.makedirs(args.checkpoint_dir, exist_ok=True)
             ckpt_path = f"{args.checkpoint_dir}/epoch_{epoch}"
             accelerator.save_state(ckpt_path)

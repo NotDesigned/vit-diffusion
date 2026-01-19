@@ -22,7 +22,7 @@ def sample_synthetic_2d(model, scheduler, num_samples, device, input_size=1, mod
     for t in scheduler.timesteps:
         timesteps = torch.full((num_samples,), t, device=device, dtype=torch.long)
         
-        with torch.no_grad():
+        with torch.inference_mode():
             output = model(latents, timesteps, None)
             
             if mode == 'vit':
@@ -65,7 +65,7 @@ def visualize_vector_field(model, device, t=500, grid_size=20, bounds=(-2, 2)):
     latents = grid_points.view(B, 2, 1, 1) 
     timesteps = torch.full((B,), t, device=device, dtype=torch.long)
     
-    with torch.no_grad():
+    with torch.inference_mode():
         w, mu, U, lam = model(latents, timesteps, None)
         # w: (B, K)
         # mu: (B, K, 2, 1, 1)

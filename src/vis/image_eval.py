@@ -21,7 +21,7 @@ def sample_images(model, scheduler, vae, num_samples, device, input_size, in_cha
         # Expand scalar time to batch
         timesteps = torch.full((num_samples,), t, device=device, dtype=torch.long)
         
-        with torch.no_grad():
+        with torch.inference_mode():
             output = model(latents, timesteps, None)
             
             if mode == 'vit':

@@ -154,7 +154,8 @@ def get_latent_dataloader(
     default_kwargs = {
         'shuffle': True,
         'num_workers': 4,
-        'pin_memory': True
+        'pin_memory': True,
+        'persistent_workers': True
     }
     default_kwargs.update(dataloader_kwargs)
 
