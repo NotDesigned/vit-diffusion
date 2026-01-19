@@ -26,7 +26,6 @@ class TrinityLoss(nn.Module):
         if lambda_div is None: lambda_div = self.lambda_div
         if lambda_repul is None: lambda_repul = self.lambda_repul
         if sigma_gmm is None: sigma_gmm = self.sigma_gmm
-        if lambda_repul is None: lambda_repul = self.lambda_repul # Handle None from train loop
 
         w, mu, U, lam = pred
         

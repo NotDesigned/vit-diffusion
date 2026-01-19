@@ -3,6 +3,21 @@ import torch.nn as nn
 import torch.nn.functional as F
 import math
 
+
+def unpatchify(x, H, W, patch_size, out_channels):
+    """
+    Converts patch tokens back to image format.
+    x: (N, L, patch_size**2 * C)
+    Returns: (N, C, H, W)
+    """
+    p = patch_size
+    h = H // p
+    w = W // p
+    x = x.reshape(shape=(x.shape[0], h, w, p, p, out_channels))
+    x = torch.einsum('nhwpqc->nchpwq', x)
+    return x.reshape(shape=(x.shape[0], out_channels, h * p, w * p))
+
+
 class StandardHead(nn.Module):
     """
     Standard Diffusion Head: Predicts the noise/score directly.
@@ -20,22 +35,8 @@ class StandardHead(nn.Module):
     def forward(self, x, H, W):
         # x: (B, L, hidden_size)
         x = self.proj(x)
-        return self.unpatchify(x, H, W)
+        return unpatchify(x, H, W, self.patch_size, self.out_channels)
 
-    def unpatchify(self, x, H, W):
-        """
-        x: (N, L, patch_size**2 * C)
-        imgs: (N, C, H, W)
-        """
-        p = self.patch_size
-        h = H // p
-        w = W // p
-        c = self.out_channels
-        
-        x = x.reshape(shape=(x.shape[0], h, w, p, p, c))
-        x = torch.einsum('nhwpqc->nchpwq', x)
-        imgs = x.reshape(shape=(x.shape[0], c, h * p, w * p))
-        return imgs
 
 class HydraHead(nn.Module):
     """
@@ -103,7 +104,7 @@ class HydraHead(nn.Module):
         # We need to unpatchify for each K. 
         # Permute to (B*K, L, ...) to use unpatchify logic
         mu_flat = mu_flat.permute(0, 2, 1, 3).reshape(B * self.K, L, -1)
-        mu = self.unpatchify(mu_flat, H, W) # (B*K, C, H, W)
+        mu = unpatchify(mu_flat, H, W, self.patch_size, self.out_channels) # (B*K, C, H, W)
         mu = mu.view(B, self.K, self.out_channels, H, W)
         
         # --- 3. U (Eigen-Basis) ---
@@ -117,8 +118,8 @@ class HydraHead(nn.Module):
         U_flat = U_flat.view(B, L, self.K, self.R, ppm_C)
         # Move Batch, K, R to front -> (B*K*R, L, ppm*C)
         U_flat = U_flat.permute(0, 2, 3, 1, 4).reshape(B * self.K * self.R, L, ppm_C)
-        
-        U_imgs = self.unpatchify(U_flat, H, W) # (B*K*R, C, H, W)
+
+        U_imgs = unpatchify(U_flat, H, W, self.patch_size, self.out_channels) # (B*K*R, C, H, W)
         U_vecs = U_imgs.flatten(1) # (B*K*R, D)
         
         # FIX: Correctly reshape respecting memory layout (B, K, R, D) then permute
@@ -132,13 +133,3 @@ class HydraHead(nn.Module):
         lam = torch.sigmoid(lambda_logits).view(B, self.K, self.R)
         
         return w, mu, U, lam
-
-    def unpatchify(self, x, H, W):
-        p = self.patch_size
-        h = H // p
-        w_dim = W // p
-        c = self.out_channels
-        x = x.reshape(shape=(x.shape[0], h, w_dim, p, p, c))
-        x = torch.einsum('nhwpqc->nchpwq', x)
-        imgs = x.reshape(shape=(x.shape[0], c, h * p, w_dim * p))
-        return imgs

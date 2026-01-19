@@ -5,10 +5,24 @@ from accelerate import Accelerator
 from accelerate.logging import get_logger
 import os
 import argparse
+from contextlib import contextmanager
 from tqdm import tqdm
 from torchvision import transforms, datasets
 from diffusers.schedulers.scheduling_ddpm import DDPMScheduler
 import wandb
+
+
+@contextmanager
+def ema_scope(ema_model, use_ema):
+    """Context manager for temporarily switching to EMA weights during evaluation."""
+    if use_ema and ema_model is not None:
+        ema_model.store()
+        ema_model.copy_to()
+    try:
+        yield
+    finally:
+        if use_ema and ema_model is not None:
+            ema_model.restore()
 
 from src.models import DiT
 from src.diffusion.loss import TrinityLoss
@@ -16,6 +30,7 @@ from src.utils.autoencoder import AutoencoderWrapper
 from src.vis.synthetic_plot import log_synthetic_eval
 from src.vis.image_eval import log_image_eval
 from src.vis.fid_eval import compute_fid, log_fid_to_wandb
+from src.data.latent_dataset import get_latent_dataloader
 
 def get_dataloader(data_path, batch_size, image_size):
     """
@@ -115,6 +130,11 @@ def main():
     parser.add_argument("--fid_num_samples", type=int, default=5000, help="Number of samples for FID calculation")
     parser.add_argument("--fid_inference_steps", type=int, default=50, help="Number of denoising steps for FID (default: 50, faster than 1000)")
 
+    # Latent caching (speeds up training by pre-encoding images)
+    parser.add_argument("--use_latent_cache", action='store_true', help="Pre-encode images to latent space and cache to disk")
+    parser.add_argument("--latent_cache_dir", type=str, default=None, help="Directory for latent cache (default: data_path/.latent_cache)")
+    parser.add_argument("--force_recompute_latents", action='store_true', help="Force recompute latents even if cache exists")
+
     args = parser.parse_args()
     
     print("Loaded config:", args) 
@@ -145,20 +165,35 @@ def main():
         vae = None
     else:
         # Calculate real image size based on latent input_size * 8 (VAE downsample factor)
-        real_image_size = args.input_size * 8 
-        dataloader = get_dataloader(args.data_path, args.batch_size, real_image_size)
-        
-        in_channels = 4
-        input_size = args.input_size
-        patch_size = args.patch_size
-        use_vae = True
-        
+        real_image_size = args.input_size * 8
+
         # Scale input_size based on VAE compression (usually /8)
         vae = AutoencoderWrapper().to(device)
         vae.eval()
         # Freeze VAE
         for p in vae.parameters():
             p.requires_grad = False
+
+        if args.use_latent_cache:
+            # Use pre-encoded latent dataset (faster training)
+            print("Using pre-encoded latent cache for training")
+            dataloader = get_latent_dataloader(
+                data_path=args.data_path,
+                vae=vae,
+                batch_size=args.batch_size,
+                image_size=real_image_size,
+                cache_dir=args.latent_cache_dir,
+                device=device,
+                force_recompute=args.force_recompute_latents
+            )
+            use_vae = False  # Latents are already encoded
+        else:
+            dataloader = get_dataloader(args.data_path, args.batch_size, real_image_size)
+            use_vae = True
+
+        in_channels = 4
+        input_size = args.input_size
+        patch_size = args.patch_size
 
     # Vit Params dict
     vit_conf = {'num_heads': args.vit_num_heads, 'rank': args.vit_rank} if args.mode == 'vit' else None
@@ -255,19 +290,23 @@ def main():
         
         for step, batch in progress_bar:
             if use_vae:
-                # Batch is images (B, 3, H, W)
+                # Batch is images (B, 3, H, W) - need VAE encoding
                 if isinstance(batch, (list, tuple)):
-                     images, _ = batch
+                    images, _ = batch
                 else:
-                     images = batch
+                    images = batch
 
                 with torch.no_grad():
                     # Encode to Latents
                     # Note: VAE expects normalized inputs
-                    latents = vae.encode(images.to(device, dtype=torch.float16)) # VAE wraps scale factor
+                    latents = vae.encode(images.to(device, dtype=torch.float16))
             else:
-                # Batch is (B, C, 1, 1) - from SyntheticDataset
-                latents = batch.to(device)
+                # Batch is pre-encoded latents or synthetic data
+                if isinstance(batch, (list, tuple)):
+                    latents, _ = batch
+                else:
+                    latents = batch
+                latents = latents.to(device)
                 
             # Sample Noise
             noise = torch.randn_like(latents)
@@ -350,52 +389,34 @@ def main():
                 
         if epoch % args.log_every_epoch == 0:
             if accelerator.is_local_main_process:
-                # Validation / Plotting for Synthetic Data
-                if args.dataset_type == 'synthetic':
-                    print(f"Generating synthetic samples for epoch {epoch}...")
-                    # Use EMA model for evaluation if available
-                    if args.use_ema:
-                        ema_model.store()  # Store current params
-                        ema_model.copy_to()  # Copy EMA params to model
-                    
-                    log_synthetic_eval(model, noise_scheduler, device, current_step, args.synthetic_type, wandb_on=args.use_wandb)
-                    
-                    if args.use_ema:
-                        ema_model.restore()  # Restore original params
-                else:
-                    # Validation / Plotting for Image Data
-                    print(f"Generating image samples for epoch {epoch}...")
-                    # Use EMA model for evaluation if available
-                    if args.use_ema:
-                        ema_model.store()
-                        ema_model.copy_to()
-                    
-                    log_image_eval(model, noise_scheduler, vae, device, current_step, args, wandb_on=args.use_wandb)
-                    
-                    # Compute FID if enabled (only for image datasets)
-                    # All processes generate samples in parallel for faster FID computation
-                    if args.compute_fid and args.dataset_type == 'image_folder':
-                        if accelerator.is_local_main_process:
-                            print(f"Computing FID at epoch {epoch} (using {args.fid_inference_steps} inference steps, {accelerator.num_processes} GPUs)...")
-                        fid_metrics = compute_fid(
-                            model=model,
-                            scheduler=noise_scheduler,
-                            vae=vae,
-                            num_samples=args.fid_num_samples,
-                            device=device,
-                            real_dataset_path=args.data_path,
-                            temp_dir=f"{args.checkpoint_dir}/fid_temp",
-                            mode=args.mode,
-                            strategy='sample',
-                            num_inference_steps=args.fid_inference_steps,
-                            accelerator=accelerator  # Pass accelerator for distributed generation
-                        )
-                        # Only main process logs FID
-                        if accelerator.is_local_main_process:
-                            log_fid_to_wandb(fid_metrics, current_step, wandb_on=args.use_wandb)
-                    
-                    if args.use_ema:
-                        ema_model.restore()
+                # Validation / Plotting
+                with ema_scope(ema_model, args.use_ema):
+                    if args.dataset_type == 'synthetic':
+                        print(f"Generating synthetic samples for epoch {epoch}...")
+                        log_synthetic_eval(model, noise_scheduler, device, current_step, args.synthetic_type, wandb_on=args.use_wandb)
+                    else:
+                        print(f"Generating image samples for epoch {epoch}...")
+                        log_image_eval(model, noise_scheduler, vae, device, current_step, args, wandb_on=args.use_wandb)
+
+                        # Compute FID if enabled (only for image datasets)
+                        if args.compute_fid and args.dataset_type == 'image_folder':
+                            if accelerator.is_local_main_process:
+                                print(f"Computing FID at epoch {epoch} (using {args.fid_inference_steps} inference steps, {accelerator.num_processes} GPUs)...")
+                            fid_metrics = compute_fid(
+                                model=model,
+                                scheduler=noise_scheduler,
+                                vae=vae,
+                                num_samples=args.fid_num_samples,
+                                device=device,
+                                real_dataset_path=args.data_path,
+                                temp_dir=f"{args.checkpoint_dir}/fid_temp",
+                                mode=args.mode,
+                                strategy='sample',
+                                num_inference_steps=args.fid_inference_steps,
+                                accelerator=accelerator
+                            )
+                            if accelerator.is_local_main_process:
+                                log_fid_to_wandb(fid_metrics, current_step, wandb_on=args.use_wandb)
         
         if epoch % args.ckpt_every_epoch == 0 and accelerator.is_local_main_process:
             os.makedirs(args.checkpoint_dir, exist_ok=True)

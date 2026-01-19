@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 import math
 from .heads import StandardHead, HydraHead
-import timm.models.vision_transformer as vits
 
 class DiT(nn.Module):
     """
@@ -44,8 +43,7 @@ class DiT(nn.Module):
         self.blocks = nn.ModuleList([
             DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) for _ in range(depth)
         ])
-        
-        self.final_layer = DiTFinalLayer(hidden_size, patch_size, self.out_channels) # Standard
+
         self.pos_embed = nn.Parameter(torch.zeros(1, (input_size // patch_size) ** 2, hidden_size), requires_grad=False)
         
         self.initialize_weights()
@@ -149,24 +147,6 @@ class DiTBlock(nn.Module):
         x = x + gate_mlp.unsqueeze(1) * self.mlp(x_norm)
         return x
 
-class DiTFinalLayer(nn.Module):
-    """
-    The final layer of DiT.
-    """
-    def __init__(self, hidden_size, patch_size, out_channels):
-        super().__init__()
-        self.norm_final = nn.LayerNorm(hidden_size, elementwise_affine=False, eps=1e-6)
-        self.linear = nn.Linear(hidden_size, patch_size * patch_size * out_channels, bias=True)
-        self.adaLN_modulation = nn.Sequential(
-            nn.SiLU(),
-            nn.Linear(hidden_size, 2 * hidden_size, bias=True)
-        )
-
-    def forward(self, x, c):
-        shift, scale = self.adaLN_modulation(c).chunk(2, dim=1)
-        x = modulate(self.norm_final(x), shift, scale)
-        x = self.linear(x)
-        return x
 
 class TimestepEmbedder(nn.Module):
     """
